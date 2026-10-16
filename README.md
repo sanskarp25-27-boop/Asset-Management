@@ -2,7 +2,7 @@
 
 Tracking of assets issued to employees (IT hardware and software subscriptions) for ERPNext v16,
 built entirely on ERPNext's standard **Assets** module. There is no separate asset register. The app
-adds a full-screen **Asset Workspace** page, cost reports and a few fields on the standard forms.
+adds an **Asset Workspace** page in the standard ERPNext desk UI, cost reports and a few fields on the standard forms.
 
 | Level | Standard record | Example |
 |---|---|---|
@@ -22,7 +22,7 @@ Needs ERPNext v16.
 cd ~/frappe-bench
 bench get-app <repo-url> asset_management     # or copy the folder into apps/ and: bench pip install -e apps/asset_management
 bench --site <site> install-app asset_management
-bench build --app asset_management             # links /assets/asset_management (the page's stylesheet, logo and guide)
+bench build --app asset_management             # links /assets/asset_management (the user guide)
 bench restart
 ```
 
@@ -46,7 +46,9 @@ Installing (and every `bench migrate`) runs `asset_management/asset_management/s
 | `asset.py` | Asset doc events for the naming |
 | `sample_data.py` | Optional demo data |
 
-`public/css/asset_workspace.css` is the page's stylesheet (the same look as the SOR Workspace).
+The page uses only standard desk components (page head and buttons, page-form filters, form-style tabs, number
+cards, `frappe.ui.Dialog` with Link / Date fields, `frappe.Chart`, `frappe.DataTable`), so it follows the user's
+ERPNext theme (light / dark) like any other desk page.
 
 ## Sample data (demo / staging only)
 
