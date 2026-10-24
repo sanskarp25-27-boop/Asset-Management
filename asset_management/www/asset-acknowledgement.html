@@ -1,0 +1,138 @@
+{% extends "templates/base.html" %}
+
+{% block meta_block %}{{ super() }}<meta name="robots" content="noindex, nofollow">{% endblock %}
+{% block title %}Asset Acknowledgement{% endblock %}
+{% block navbar %}{% endblock %}
+{% block footer %}{% endblock %}
+
+{% block style %}
+<style>
+	body { background: linear-gradient(160deg, #f5f3ff 0%, #f4f6fc 55%, #eef6fb 100%); min-height: 100vh; margin: 0;
+		font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #1f2937; }
+	.ack-wrap { max-width: 720px; margin: 0 auto; padding: 40px 16px 60px; }
+	.ack-card { background: #fff; border-radius: 16px; box-shadow: 0 12px 40px rgba(49, 46, 129, .12); overflow: hidden; }
+	.ack-head { background: linear-gradient(135deg, #241d55 0%, #4338ca 60%, #6d4aff 100%); color: #fff; padding: 26px 28px; }
+	.ack-head .eyebrow { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; opacity: .8; }
+	.ack-head h1 { font-size: 22px; font-weight: 600; margin: 6px 0 0; color: #fff; }
+	.ack-body { padding: 26px 28px 30px; }
+	.ack-body p { color: #4b5563; margin: 0 0 16px; line-height: 1.55; }
+	.ack-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: #6b7280; margin-bottom: 18px; }
+	.ack-meta b { color: #1f2937; font-weight: 600; }
+	.ack-list { display: grid; gap: 12px; margin-bottom: 22px; }
+	.ack-item { border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px 16px; display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; }
+	.ack-item .name { font-weight: 600; font-size: 15px; }
+	.ack-item .sub { color: #6b7280; font-size: 13px; }
+	.ack-item .stars { color: #f59e0b; font-size: 18px; letter-spacing: 2px; text-align: right; white-space: nowrap; }
+	.ack-item .stars .off { color: #d1d5db; }
+	.ack-item .notes { grid-column: 1 / -1; color: #6b7280; font-size: 13px; font-style: italic; }
+	.ack-label { display: block; font-size: 14px; font-weight: 600; color: #1f2937; margin: 4px 0 6px; }
+	.ack-label .opt { font-weight: 400; color: #9ca3af; }
+	.ack-remarks { width: 100%; box-sizing: border-box; border: 1px solid #d1d5db; border-radius: 10px; padding: 10px 12px; font: inherit;
+		font-size: 14px; color: #1f2937; resize: vertical; min-height: 76px; background: #fafafa; }
+	.ack-remarks:focus { outline: none; border-color: #6d4aff; background: #fff; box-shadow: 0 0 0 3px rgba(109, 74, 255, .15); }
+	.ack-hint { font-size: 12px; color: #9ca3af; margin: 6px 0 16px; }
+	.ack-check { display: flex; gap: 10px; align-items: flex-start; font-size: 14px; margin: 4px 0 18px; cursor: pointer; }
+	.ack-check input { width: 18px; height: 18px; margin-top: 1px; accent-color: #4338ca; }
+	.ack-btn { width: 100%; border: 0; border-radius: 10px; padding: 14px; font-size: 16px; font-weight: 600; color: #fff;
+		background: linear-gradient(135deg, #4338ca 0%, #6d4aff 100%); cursor: pointer; box-shadow: 0 8px 22px rgba(67, 56, 202, .3); }
+	.ack-btn[disabled] { opacity: .45; cursor: not-allowed; box-shadow: none; }
+	.ack-done { text-align: center; padding: 18px 0 6px; }
+	.ack-done .tick { width: 64px; height: 64px; border-radius: 50%; background: #dcfce7; color: #16a34a; font-size: 34px; line-height: 64px; margin: 0 auto 14px; }
+	.ack-done h2 { font-size: 22px; margin: 0 0 8px; color: #111827; }
+	.ack-error { color: #b91c1c; font-size: 14px; margin-top: 12px; display: none; }
+	.ack-foot { text-align: center; color: #9ca3af; font-size: 12px; margin-top: 18px; }
+	@media (max-width: 520px) { .ack-item { grid-template-columns: 1fr; } .ack-item .stars { text-align: left; } }
+</style>
+{% endblock %}
+
+{% macro star_html(n) -%}
+	{%- for s in range(5) -%}{% if s < n %}★{% else %}<span class="off">★</span>{% endif %}{%- endfor -%}
+{%- endmacro %}
+
+{% block content %}
+<div class="ack-wrap">
+	<div class="ack-card">
+		<div class="ack-head">
+			<div class="eyebrow">{{ (company or "") | e }}{% if company %} · {% endif %}IT Assets</div>
+			<h1>Asset Acknowledgement</h1>
+		</div>
+		<div class="ack-body">
+		{% if state == "invalid" %}
+			<p>This link is not valid. It may have been copied incompletely. Please use the link from your email, or contact the IT team.</p>
+		{% elif state == "cancelled" %}
+			<p>This hand-over was cancelled by the IT team, so there is nothing to acknowledge. If you think this is a mistake, please contact them.</p>
+		{% else %}
+			<div id="ack-pending" {% if state == "completed" %}style="display:none"{% endif %}>
+				<p style="margin-bottom:6px">Hi <b>{{ (ack.employee_name or ack.employee) | e }}</b>,</p>
+				<p>{{ (message or "Please check the asset(s) below and confirm that you have received them in the condition shown.") | e }}</p>
+				<div class="ack-meta">
+					<span>Handed over <b>{{ frappe.utils.format_datetime(ack.assigned_on, "dd-MM-yyyy HH:mm") if ack.assigned_on else "" }}</b></span>
+					<span>Reference <b>{{ ack.name | e }}</b></span>
+				</div>
+				<div class="ack-list">
+					{% for i in assets %}
+					<div class="ack-item">
+						<div>
+							<div class="name">{{ i.asset_name | e }}</div>
+							<div class="sub">{{ (i.item_code or "") | e }}{% if i.sub_category %} · {{ i.sub_category | e }}{% endif %}</div>
+							<div class="sub">Serial No: <b>{{ (i.serial_no or "—") | e }}</b>{% if i.location %} · {{ i.location | e }}{% endif %}</div>
+						</div>
+						<div class="stars" title="Condition at hand-over: {{ i.stars }} of 5">{% if i.stars %}{{ star_html(i.stars) }}{% else %}<span class="sub">Condition not rated</span>{% endif %}</div>
+						{% if i.condition_notes %}<div class="notes">{{ i.condition_notes | e }}</div>{% endif %}
+					</div>
+					{% endfor %}
+				</div>
+				<label class="ack-label" for="ack-remarks">Remarks <span class="opt">(optional)</span></label>
+				<textarea id="ack-remarks" class="ack-remarks" maxlength="2000" rows="3" placeholder="e.g. Charger not included, small dent on the lid, received a different colour…"></textarea>
+				<div class="ack-hint">Anything the IT team should know. Your remarks are sent to them with your acknowledgement.</div>
+				<label class="ack-check"><input type="checkbox" id="ack-confirm"> <span>I confirm that I have received the asset{{ "s" if assets|length > 1 else "" }} above in the condition shown, except for anything I have noted in the remarks.</span></label>
+				<button class="ack-btn" id="ack-btn" disabled>Acknowledge</button>
+				<div class="ack-error" id="ack-error"></div>
+			</div>
+			<div id="ack-thanks" class="ack-done" {% if state != "completed" %}style="display:none"{% endif %}>
+				<div class="tick">✓</div>
+				<h2>Thank you for acknowledging</h2>
+				<p id="ack-when">{% if state == "completed" and ack.acknowledged_on %}Acknowledged on {{ frappe.utils.format_datetime(ack.acknowledged_on, "dd-MM-yyyy HH:mm") }}.{% endif %} Your IT team can now see it. You can close this page.</p>
+			</div>
+		{% endif %}
+		</div>
+	</div>
+	<div class="ack-foot">This page was sent to you by your IT team. No login is needed.</div>
+</div>
+{% endblock %}
+
+{% block script %}
+{% if state == "pending" %}
+<script>
+	frappe.ready(function () {
+		const box = document.getElementById("ack-confirm");
+		const btn = document.getElementById("ack-btn");
+		const err = document.getElementById("ack-error");
+		box.addEventListener("change", () => (btn.disabled = !box.checked));
+		btn.addEventListener("click", () => {
+			btn.disabled = true;
+			btn.textContent = "Saving…";
+			err.style.display = "none";
+			frappe.call({
+				method: "asset_management.asset_management.acknowledgement.acknowledge",
+				args: { key: {{ key | tojson }}, remarks: document.getElementById("ack-remarks").value },
+				type: "POST",
+				freeze: false,
+				callback: (r) => {
+					document.getElementById("ack-pending").style.display = "none";
+					document.getElementById("ack-thanks").style.display = "";
+					const when = r.message && r.message.acknowledged_on ? r.message.acknowledged_on.slice(0, 16) : "";
+					document.getElementById("ack-when").textContent = (when ? "Acknowledged on " + when + ". " : "") + "Your IT team can now see it. You can close this page.";
+				},
+				error: () => {
+					btn.disabled = false;
+					btn.textContent = "Acknowledge";
+					err.textContent = "Something went wrong. Please try again, or contact the IT team.";
+					err.style.display = "block";
+				},
+			});
+		});
+	});
+</script>
+{% endif %}
+{% endblock %}

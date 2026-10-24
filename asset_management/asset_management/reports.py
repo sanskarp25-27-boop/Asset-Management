@@ -43,17 +43,17 @@ def _args(value):
 def monthly(a):
 	"""Monthly cost of one asset."""
 	cost = flt(a.purchase_cost)
-	if a.category_type == "Subscription":
+	if a.is_subscription:
 		return cost / 12 if a.billing_cycle == "Yearly" else cost
 	return cost / HW_LIFE_MONTHS
 
 
 def sub_monthly(a):
-	return monthly(a) if a.category_type == "Subscription" else 0
+	return monthly(a) if a.is_subscription else 0
 
 
 def hw_value(a):
-	return flt(a.purchase_cost) if a.category_type != "Subscription" else 0
+	return flt(a.purchase_cost) if not a.is_subscription else 0
 
 
 def col(key, label, type="text", total=False, **kw):
@@ -147,7 +147,7 @@ def chart(title, rows, label_key, value_key, type="money", limit=12):
 def _employee_rows(f, assets, emps):
 	held = _held_by(assets, emps, f)
 	spend = {}
-	for p in _periods([a for a in assets if a.category_type == "Subscription"]):
+	for p in _periods([a for a in assets if a.is_subscription]):
 		spend[p["employee"]] = spend.get(p["employee"], 0) + _spend(p)
 	rows = {}
 	for e in emps.values():
@@ -164,7 +164,7 @@ def _employee_rows(f, assets, emps):
 		r = rows.get(a.assigned_to)
 		if not r:
 			continue
-		if a.category_type == "Subscription":
+		if a.is_subscription:
 			r.subscriptions += 1
 			r.subs_month += sub_monthly(a)
 		else:
@@ -342,7 +342,7 @@ def _r_item_utilisation(f):
 
 def _r_subscription_seats(f):
 	subs = {}
-	for a in [a for a in _assets(f) if a.category_type == "Subscription"]:
+	for a in [a for a in _assets(f) if a.is_subscription]:
 		s = subs.setdefault(a.item, frappe._dict(item=a.item, item_sub=a.sub_category, cycle=a.billing_cycle or "—", seats=0, used=0, free=0,
 			seat_month=0.0, monthly=0.0, wasted=0.0, annual=0.0, next_renewal=None))
 		s.seats += 1
@@ -425,7 +425,7 @@ def _r_renewals(f):
 		if not a.expiry_date or getdate(a.expiry_date) >= until:
 			continue
 		e = emps.get(a.assigned_to) if a.assigned_to else None
-		sub = a.category_type == "Subscription"
+		sub = a.is_subscription
 		d = getdate(a.expiry_date)
 		row = frappe._dict(asset=a.name, asset_sub=f"{a.category} › {a.sub_category}", kind="Renewal" if sub else ("Warranty expired" if d < today else "Warranty ends"),
 			date=d, days=date_diff(d, today), cycle=a.billing_cycle if sub else None, holder=e.employee_name if e else "—",
@@ -538,7 +538,7 @@ def _r_asset_ageing(f):
 		g.value += hw_value(a)
 		g.subs_month += sub_monthly(a)
 		g.age_total += age
-		if a.category_type != "Subscription" and a.expiry_date and getdate(a.expiry_date) < today:
+		if not a.is_subscription and a.expiry_date and getdate(a.expiry_date) < today:
 			g.expired += 1
 	rows = sorted(groups.values(), key=lambda g: (g.category or "", g._order))
 	for g in rows:
@@ -599,7 +599,7 @@ def _r_employee_register(f):
 		e = emps.get(a.assigned_to)
 		rows.append(frappe._dict(employee=e.employee_name if e else a.assigned_to, employee_sub=a.assigned_to, department=e.department if e else "—",
 			designation=(e.designation if e else "") or "—", asset=a.name, asset_sub=a.serial_no or "", category=a.category, sub_category=a.sub_category,
-			type=a.category_type, since=a.assigned_on, value=hw_value(a), month=monthly(a), expiry=a.expiry_date, _go=f"asset|{a.name}"))
+			type=a.category_type, is_sub=a.is_subscription, since=a.assigned_on, value=hw_value(a), month=monthly(a), expiry=a.expiry_date, _go=f"asset|{a.name}"))
 	rows.sort(key=lambda r: (r.employee, r.category or "", r.asset))
 	return {
 		"columns": [
@@ -611,8 +611,8 @@ def _r_employee_register(f):
 		"rows": rows,
 		"summary": [
 			tile("Assets with employees", len(rows)), tile("Employees", len({r.employee_sub for r in rows})),
-			tile("Hardware", len([r for r in rows if r.type != "Subscription"]), "int", "lime"),
-			tile("Subscriptions", len([r for r in rows if r.type == "Subscription"]), "int", "lav"),
+			tile("Hardware", len([r for r in rows if not r.is_sub]), "int", "lime"),
+			tile("Subscriptions", len([r for r in rows if r.is_sub]), "int", "lav"),
 			money_tile("Hardware value", sum(r.value for r in rows)),
 			money_tile("Monthly cost", sum(r.month for r in rows)),
 		],

@@ -21,7 +21,9 @@ const AM_NOT_AVAILABLE = ["Scrapped", "Sold", "Capitalized", "In Maintenance", "
 
 const amEsc = (v) => frappe.utils.escape_html(v == null ? "" : String(v));
 const amInr = (v, d = 0) => format_currency(Number(v || 0), "INR", d);
-const amDate = (d) => (d ? frappe.datetime.str_to_user(String(d).slice(0, 10)) : "");
+const amDate = (d) => (d ? moment(String(d).slice(0, 10)).format("DD/MM/YYYY") : "");
+/** DD/MM/YYYY with the time below it (none for a movement that only has a date). */
+const amDateTime = (d, dateOnly) => (d ? `${amDate(d)}${!dateOnly && String(d).length > 10 ? amMuted(moment(String(d)).format("hh:mm A")) : ""}` : "");
 /** "Research & Development - IL" -> "Research & Development" (drop the company abbreviation). */
 const amDept = (d) => String(d || "").replace(/\s+-\s+[A-Z0-9]{1,6}$/, "");
 const amInitials = (name) => String(name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("");
@@ -41,8 +43,82 @@ const AM_INDICATOR = {
 	"Warranty expired": "red",
 	"Warranty ends": "orange",
 	Renewal: "purple",
+	// hand-over acknowledgement and movement events
+	Pending: "orange",
+	Completed: "green",
+	Cancelled: "gray",
+	Received: "gray",
+	Transferred: "purple",
+	Moved: "cyan",
+};
+/** A Rating field (0..1) as five stars. */
+const amStars = (v) => {
+	const n = Math.round(Number(v || 0) * 5);
+	return n ? `<span class="am-stars" title="${__("Condition {0} of 5", [n])}">${"★".repeat(n)}<span class="am-stars-off">${"★".repeat(5 - n)}</span></span>` : `<span class="text-muted">—</span>`;
+};
+/** Acknowledgement status of a hand-over, e.g. "Ack: Pending". */
+const amAck = (status) => (status ? amPill(__("Ack: {0}", [__(status)]), AM_INDICATOR[status]) : "");
+
+/** A dialog control for a Specification Field (Text / Number / Select / Yes/No / Date). */
+const amSpecControl = (f, fieldname, extra = {}) => {
+	const base = { fieldname, label: f.field_label, reqd: f.mandatory ? 1 : 0, ...extra };
+	if (f.field_type === "Number") return { ...base, fieldtype: "Data" };  // text, checked as a number on the server (no "0.000")
+	if (f.field_type === "Date") return { ...base, fieldtype: "Date" };
+	if (f.field_type === "Yes/No") return { ...base, fieldtype: "Select", options: ["", "Yes", "No"] };
+	if (f.field_type === "Select") return { ...base, fieldtype: "Select", options: ["", ...String(f.options || "").replace(/,/g, "\n").split("\n").map((o) => o.trim()).filter(Boolean)] };
+	return { ...base, fieldtype: "Data" };
+};
+
+/** The "Units" table: a row per asset with its serial number and the Per Unit specification fields. */
+const amUnitsTable = (perUnit, serialLabel) => {
+	const width = Math.max(2, Math.floor(7 / Math.max(perUnit.length, 1)));
+	return {
+		fieldtype: "Table", fieldname: "units", label: __("Units"), in_place_edit: true, cannot_add_rows: true, cannot_delete_rows: true, data: [],
+		fields: [
+			{ fieldtype: "Data", fieldname: "serial_no", label: serialLabel, in_list_view: 1, reqd: 1, columns: 3 },
+			...perUnit.map((f, i) => amSpecControl(f, `pu_${i}`, { in_list_view: 1, columns: width })),
+		],
+	};
+};
+
+/** Make the Units table n rows long (keeping what is typed); `serials` fills the serial numbers in order. */
+const amResizeUnits = (field, n, serials = null) => {
+	const data = (field.df.data || []).slice(0, Math.max(n || 0, 0));
+	while (data.length < n) data.push({});
+	data.forEach((row, i) => {
+		row.idx = i + 1;
+		row.name = row.name || `unit-${i + 1}`;
+		if (serials && serials[i]) row.serial_no = serials[i];
+	});
+	field.df.data = data;
+	field.grid.refresh();
+};
+
+/** [{serial_no, specifications: {label: value}}] from the Units table rows. */
+const amUnitsFromRows = (rows, perUnit) => (rows || []).map((r) => ({
+	serial_no: String(r.serial_no || "").trim(),
+	specifications: Object.fromEntries(perUnit.map((f, i) => [f.field_label, r[`pu_${i}`] ?? ""])),
+}));
+
+/** The first problem in the units (missing / repeated serial, missing mandatory value), or "". */
+const amCheckUnits = (units, perUnit, serialLabel) => {
+	if (!units.length) return __("Enter the quantity.");
+	const seen = new Set();
+	for (const [i, u] of units.entries()) {
+		if (!u.serial_no) return __("Row {0}: enter the {1}.", [i + 1, serialLabel]);
+		const key = u.serial_no.toLowerCase();
+		if (seen.has(key)) return __("{0} {1} is entered twice.", [serialLabel, u.serial_no]);
+		seen.add(key);
+		const missing = perUnit.filter((f) => f.mandatory && !String(u.specifications[f.field_label] ?? "").trim()).map((f) => f.field_label);
+		if (missing.length) return __("Row {0} ({1}): enter {2}.", [i + 1, u.serial_no, missing.join(", ")]);
+	}
+	return "";
 };
 const AM_STATUSES = ["Available", "Assigned", "Draft", "Under Repair", "Disposed"];
+/** Category Types (Asset Category Type master) carry their own tag colour. */
+const amSetTypeColours = (types) => types.forEach((t) => {
+	if (!AM_STATUSES.includes(t.name)) AM_INDICATOR[t.name] = t.color || "gray";
+});
 const amPill = (text, colour) => (text ? `<span class="indicator-pill ${colour || AM_INDICATOR[text] || "gray"} no-indicator-dot">${amEsc(text)}</span>` : "");
 const amMuted = (text) => `<div class="text-muted small">${amEsc(text)}</div>`;
 /** "IT Hardware › Laptop" under an asset. */
@@ -55,8 +131,10 @@ const AM_TABS = [
 	["assign", __("Assign & Return")],
 	["employees", __("Employees")],
 	["assets", __("Assets")],
+	["acknowledgements", __("Acknowledgements")],
 	["reports", __("Reports")],
 	["catalogue", __("Catalogue")],
+	["settings", __("Settings")],
 ];
 
 // Layout only; colours come from the desk theme variables so light and dark mode both work.
@@ -64,6 +142,8 @@ const AM_CSS = `
 	.am-tabs { margin: 0 0 var(--margin-md); }
 	.am-tabs .form-tabs { border-bottom: 1px solid var(--border-color); }
 	.am-body { padding: 0 var(--padding-md) var(--padding-xl); }
+	.page-form .frappe-control[data-fieldname="report"] { min-width: 230px; }
+	.page-form .frappe-control[data-fieldname="report"] select { width: 100% !important; }
 	.am-share { display: flex; align-items: center; gap: 6px; }
 	.am-share .progress { flex: 1; height: 6px; margin: 0; min-width: 40px; }
 	.am-number-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--margin-md); margin-bottom: var(--margin-md); }
@@ -107,6 +187,13 @@ const AM_CSS = `
 	.am-sub-head:first-of-type { border-top: 0; margin-top: 0; }
 	.am-report-chart { min-height: 260px; }
 	.am-days-late { color: var(--red-600); } .am-days-near { color: var(--orange-600); }
+	.am-stars { color: var(--yellow-500, #f59e0b); letter-spacing: 1px; white-space: nowrap; font-size: var(--text-md); }
+	.am-stars-off { color: var(--gray-300); }
+	.am-spec-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--margin-sm) var(--margin-md); }
+	.am-spec-grid .label { color: var(--text-muted); font-size: var(--text-sm); }
+	.am-spec-grid .value { font-weight: var(--weight-medium); }
+	.am-serial-count { margin-top: -6px; }
+	.am-moves { font-size: var(--text-sm); }
 `;
 
 // ------------------------------------------------------------------ app
@@ -126,7 +213,10 @@ class AssetWorkspace {
 			e.preventDefault();
 			this.go(...String($(e.currentTarget).attr("data-go")).split("|"));
 		});
-		this.ready = frappe.xcall(AM_API + "boot").then((b) => (this.boot = b));
+		this.ready = frappe.xcall(AM_API + "boot").then((b) => {
+			this.boot = b;
+			amSetTypeColours(Object.entries(b.category_types || {}).map(([name, t]) => ({ name, color: t.color })));
+		});
 	}
 
 	go(...parts) {
@@ -147,6 +237,8 @@ class AssetWorkspace {
 		p.add_menu_item(__("Asset List"), () => frappe.set_route("List", "Asset"));
 		p.add_menu_item(__("Asset Movement List"), () => frappe.set_route("List", "Asset Movement"));
 		p.add_menu_item(__("Employee List"), () => frappe.set_route("List", "Employee"));
+		p.add_menu_item(__("Asset Acknowledgement List"), () => frappe.set_route("List", "Asset Acknowledgement"));
+		p.add_menu_item(__("Settings"), () => this.go("settings"));
 		p.add_menu_item(__("User Guide"), () => window.open("/assets/asset_management/guide/asset-module-guide.html", "_blank"));
 		this.$body.html(`<div class="am-empty text-muted">${__("Loading…")}</div>`);
 	}
@@ -170,6 +262,8 @@ class AssetWorkspace {
 			asset: AmAssetView,
 			reports: AmReportsView,
 			catalogue: AmCatalogueView,
+			acknowledgements: AmAcksView,
+			settings: AmSettingsView,
 		};
 		const View = views[sub] || AmDashboardView;
 		this.reset();
@@ -197,7 +291,43 @@ class AssetWorkspace {
 
 	// -------------------------------------------------------------- shared dialogs
 
-	/** Assign one or more assets to an employee: a standard Asset Movement (Issue). Pass `employee` to fix the employee. */
+	/** Star rating + notes for each asset handed over (Asset Movement Item > Condition at Hand-over). */
+	conditionFields(assets, dependsOn = null) {
+		const required = this.boot.require_rating !== false;  // Settings > Condition Rating Required at Hand-over
+		const fields = [{ fieldtype: "Section Break", label: __("Condition at Hand-over"), depends_on: dependsOn,
+			description: __("Rate each asset as it is handed over (5 = like new). The employee sees it in the acknowledgement.") }];
+		assets.forEach((a, i) => {
+			fields.push(
+				{ fieldtype: "Rating", fieldname: `rating_${i}`, label: assets.length > 1 || !a ? __("Condition: {0}", [a || __("asset")]) : __("Condition"),
+					reqd: required && !dependsOn ? 1 : 0, mandatory_depends_on: required ? dependsOn : null, default: 0 },
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Data", fieldname: `notes_${i}`, label: __("Notes"), placeholder: __("e.g. small scratch on lid, charger included") },
+				{ fieldtype: "Section Break", depends_on: dependsOn, hide_border: 1 },
+			);
+		});
+		return fields;
+	}
+
+	/** {asset: {rating, notes}} from the condition fields. */
+	conditionValues(assets, v) {
+		return Object.fromEntries(assets.map((a, i) => [a, { rating: v[`rating_${i}`] || 0, notes: v[`notes_${i}`] || "" }]));
+	}
+
+	/** Where the acknowledgement email will go, under the employee field. */
+	async ackHint(d, employee) {
+		const box = d.get_field("ack_hint");
+		if (!box) return;
+		if (!this.boot.ack_enabled) return box.$wrapper.html(`<p class="text-muted small">${__("Acknowledgement emails are off (Acknowledgement Settings).")}</p>`);
+		if (!employee) return box.$wrapper.html("");
+		const e = (await frappe.db.get_value("Employee", employee, ["prefered_email", "company_email", "personal_email"])).message || {};
+		const email = e.prefered_email || e.company_email || e.personal_email;
+		box.$wrapper.html(email
+			? `<p class="text-muted small">${__("An acknowledgement link will be emailed to {0} (CC the IT team).", [`<b>${amEsc(email)}</b>`])}</p>`
+			: `<p class="small" style="color:var(--orange-600)">${__("This employee has no email address, so no acknowledgement email can be sent. Add one on the Employee record, or share the link from Acknowledgements.")}</p>`);
+	}
+
+	/** Assign one or more assets to an employee: a standard Asset Movement (Issue) with the condition at hand-over;
+	 * the employee is emailed an acknowledgement link. Pass `employee` to fix the employee. */
 	assignDialog({ assets = [], employee = "", onDone } = {}) {
 		const fields = [];
 		if (assets.length) {
@@ -210,22 +340,313 @@ class AssetWorkspace {
 			});
 		}
 		fields.push(
-			{ fieldtype: "Link", fieldname: "employee", label: __("Employee"), options: "Employee", reqd: 1, default: employee, get_query: () => ({ filters: { status: "Active" } }) },
-			{ fieldtype: "Date", fieldname: "assigned_on", label: __("Assigned On"), reqd: 1, default: this.boot.today },
+			{ fieldtype: "Link", fieldname: "employee", label: __("Employee"), options: "Employee", reqd: 1, default: employee,
+				get_query: () => ({ filters: { status: "Active" } }), onchange: () => this.ackHint(d, d.get_value("employee")) },
+			{ fieldtype: "HTML", fieldname: "ack_hint" },
+			{ fieldtype: "Datetime", fieldname: "assigned_on", label: __("Assigned On"), reqd: 1, default: frappe.datetime.now_datetime() },
+			...this.conditionFields(assets.length ? assets : [""]),
+			{ fieldtype: "Section Break" },
 			{ fieldtype: "HTML", fieldname: "note", options: `<p class="text-muted small">${__("Creates and submits a standard Asset Movement (Issue), which sets the asset's Custodian.")}</p>` },
 		);
 		const d = new frappe.ui.Dialog({
 			title: assets.length > 1 ? __("Assign {0} Assets", [assets.length]) : __("Assign Asset"),
+			size: assets.length > 1 ? "large" : undefined,
 			fields,
 			primary_action_label: __("Assign"),
 			primary_action: async (v) => {
 				const names = assets.length ? assets : [v.asset];
 				d.disable_primary_action();
 				try {
-					const r = await this.api("assign", { assets: names, employee: v.employee, assigned_on: v.assigned_on });
+					const r = await this.api("assign", { assets: names, employee: v.employee, assigned_on: v.assigned_on, conditions: this.conditionValues(names, v) });
 					d.hide();
-					frappe.show_alert({ message: __("{0} assigned to {1} ({2})", [names.length === 1 ? names[0] : __("{0} assets", [names.length]), r.employee_name || v.employee, r.movements.join(", ")]), indicator: "green" }, 6);
+					const sent = (r.acknowledgements || []).filter((a) => a.email).length;
+					frappe.show_alert({ message: __("{0} assigned to {1} ({2}){3}", [names.length === 1 ? names[0] : __("{0} assets", [names.length]), r.employee_name || v.employee, r.movements.join(", "), sent ? " · " + __("acknowledgement email sent") : ""]), indicator: "green" }, 7);
 					(onDone || (() => this.refresh()))();
+				} finally {
+					d.enable_primary_action();
+				}
+			},
+		});
+		d.show();
+		if (employee) this.ackHint(d, employee);
+		else this.ackHint(d, "");
+	}
+
+	/** Move assets to another employee and / or location (standard Asset Movements); the history is kept. */
+	transferDialog({ assets, holder, onDone }) {
+		const d = new frappe.ui.Dialog({
+			title: assets.length > 1 ? __("Transfer {0} Assets", [assets.length]) : __("Transfer Asset"),
+			size: assets.length > 1 ? "large" : undefined,
+			fields: [
+				{ fieldtype: "HTML", fieldname: "assets_html", options: `<div class="form-group"><label class="control-label">${assets.length === 1 ? __("Asset") : __("{0} assets", [assets.length])}${holder ? " " + __("now with {0}", [amEsc(holder)]) : ""}</label><div class="am-tags">${assets.map((a) => amPill(a, "blue")).join("")}</div></div>` },
+				{ fieldtype: "Link", fieldname: "employee", label: __("To Employee"), options: "Employee", get_query: () => ({ filters: { status: "Active" } }),
+					description: __("Leave blank to keep the current holder."), onchange: () => this.ackHint(d, d.get_value("employee")) },
+				{ fieldtype: "HTML", fieldname: "ack_hint" },
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Link", fieldname: "location", label: __("To Location"), options: "Location", description: __("Leave blank to keep the location.") },
+				{ fieldtype: "Datetime", fieldname: "transferred_on", label: __("Transferred On"), reqd: 1, default: frappe.datetime.now_datetime() },
+				...this.conditionFields(assets, "eval:doc.employee"),
+				{ fieldtype: "Section Break" },
+				{ fieldtype: "HTML", fieldname: "note", options: `<p class="text-muted small">${__("A standard Asset Movement: to another employee it is an Issue (or Transfer and Issue with a new location) and the new holder is emailed an acknowledgement; a location move keeps the holder.")}</p>` },
+			],
+			primary_action_label: __("Transfer"),
+			primary_action: async (v) => {
+				if (!v.employee && !v.location) return frappe.msgprint(__("Choose the employee and / or the location to transfer to."));
+				d.disable_primary_action();
+				try {
+					const r = await this.api("transfer", { assets, employee: v.employee || null, location: v.location || null, transferred_on: v.transferred_on,
+						conditions: v.employee ? this.conditionValues(assets, v) : null });
+					d.hide();
+					frappe.show_alert({ message: __("Transferred ({0}){1}", [r.movements.join(", "), (r.acknowledgements || []).length ? " · " + __("acknowledgement email sent") : ""]), indicator: "green" }, 7);
+					(onDone || (() => this.refresh()))();
+				} finally {
+					d.enable_primary_action();
+				}
+			},
+		});
+		d.show();
+	}
+
+	/** Create many assets of one model that differ only by serial number. Without an item, asks for it first. */
+	async bulkCreateDialog(itemCode, onDone) {
+		if (!itemCode) {
+			const pick = new frappe.ui.Dialog({
+				title: __("Bulk Create Assets"),
+				fields: [{ fieldtype: "Link", fieldname: "item_code", label: __("Model (Fixed Asset Item)"), options: "Item", reqd: 1,
+					get_query: () => ({ filters: { is_fixed_asset: 1, disabled: 0 } }), description: __("Every asset will be this model, with the same configuration.") }],
+				primary_action_label: __("Next"),
+				primary_action: (v) => {
+					pick.hide();
+					this.bulkCreateDialog(v.item_code, onDone);
+				},
+			});
+			return pick.show();
+		}
+		const [item, specs] = await Promise.all([
+			frappe.db.get_value("Item", itemCode, ["item_name", "item_group", "asset_category"]).then((r) => r.message || {}),
+			frappe.xcall("asset_management.asset_management.specifications.get_fields", { item_code: itemCode }),
+		]);
+		const typeName = (this.boot.categories.find((c) => c.name === item.asset_category) || {}).category_type;
+		const isSub = !!((this.boot.category_types || {})[typeName] || {}).is_subscription;
+		// fields the same for every unit vs. fields asked for each unit (Settings > Specification Fields > Per Unit)
+		const shared = specs.fields.filter((f) => !f.per_unit);
+		const perUnit = specs.fields.filter((f) => f.per_unit);
+		const specFields = shared.map((f, i) => amSpecControl(f, `spec_${i}`));
+		const serialLabel = isSub ? __("Licence / Account ID") : __("Serial No");
+		const countSerials = (text) => String(text || "").split(/[\n,;\t]+/).map((s) => s.trim()).filter(Boolean);
+		const unitsMode = perUnit.length > 0;
+		const d = new frappe.ui.Dialog({
+			title: __("Bulk Create: {0}", [item.item_name || itemCode]),
+			size: "extra-large",
+			fields: [
+				{ fieldtype: "HTML", fieldname: "model", options: `<p class="text-muted">${__("{0} · {1} · {2}. One asset is created per unit, all with the details below.", [amEsc(item.item_name || itemCode), amEsc(item.item_group || ""), amEsc(item.asset_category || "")])}</p>` },
+				{ fieldtype: "Section Break", label: __("Purchase") },
+				{ fieldtype: "Link", fieldname: "company", label: __("Company"), options: "Company", reqd: 1, default: this.boot.company },
+				{ fieldtype: "Link", fieldname: "location", label: __("Location"), options: "Location", reqd: 1, default: this.boot.default_location },
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Date", fieldname: "purchase_date", label: isSub ? __("Start Date") : __("Purchase Date"), reqd: 1, default: this.boot.today },
+				{ fieldtype: "Currency", fieldname: "net_purchase_amount", label: isSub ? __("Cost per Licence") : __("Cost per Asset"), reqd: 1,
+					description: __("ERPNext needs a purchase amount to submit an asset.") },
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Date", fieldname: "warranty_renewal_date", label: isSub ? __("Renewal Date") : __("Warranty Until") },
+				...(isSub ? [{ fieldtype: "Select", fieldname: "billing_cycle", label: __("Billing Cycle"), options: ["", "Monthly", "Yearly"] }] : []),
+				...(specFields.length ? [{ fieldtype: "Section Break", label: __("Specifications (same for every unit)") }, ...specFields.flatMap((f, i) => (i && i % 3 === 0 ? [{ fieldtype: "Section Break", hide_border: 1 }, f] : i ? [{ fieldtype: "Column Break" }, f] : [f]))] : []),
+				...(unitsMode
+					? [
+						{ fieldtype: "Section Break", label: __("Units"), description: __("One row per asset: its {0} and {1}.", [serialLabel, perUnit.map((f) => f.field_label).join(", ")]) },
+						{ fieldtype: "Int", fieldname: "quantity", label: __("Quantity"), reqd: 1, default: 1, onchange: () => resize(d.get_value("quantity")) },
+						{ fieldtype: "Column Break" },
+						{ fieldtype: "Small Text", fieldname: "paste_serials", label: __("Paste {0}s (optional)", [serialLabel]),
+							description: __("One per line or a column from Excel: fills the rows below."), onchange: () => pasteSerials() },
+						{ fieldtype: "Section Break", hide_border: 1 },
+						amUnitsTable(perUnit, serialLabel),
+					]
+					: [
+						{ fieldtype: "Section Break", label: isSub ? __("Licence / Account IDs") : __("Serial Numbers") },
+						{ fieldtype: "Small Text", fieldname: "serial_numbers", label: isSub ? __("Licence / Account IDs") : __("Serial Numbers"), reqd: 1,
+							description: __("One per line, or paste a column from Excel. Commas also work."), onchange: () => paintCount() },
+						{ fieldtype: "HTML", fieldname: "serial_count" },
+					]),
+				{ fieldtype: "Section Break", hide_border: 1 },
+				{ fieldtype: "Check", fieldname: "submit", label: __("Submit the assets (ready to assign)"), default: 1 },
+			],
+			primary_action_label: __("Create Assets"),
+			primary_action: async (v) => {
+				const specifications = Object.fromEntries(shared.map((f, i) => [f.field_label, v[`spec_${i}`] ?? ""]));
+				const payload = { item_code: itemCode, company: v.company, location: v.location, purchase_date: v.purchase_date,
+					net_purchase_amount: v.net_purchase_amount, warranty_renewal_date: v.warranty_renewal_date, billing_cycle: v.billing_cycle,
+					submit: v.submit, specifications };
+				if (unitsMode) {
+					const units = amUnitsFromRows(d.fields_dict.units.grid.get_data ? d.fields_dict.units.grid.get_data() : v.units, perUnit);
+					const problem = amCheckUnits(units, perUnit, serialLabel);
+					if (problem) return frappe.msgprint(problem);
+					payload.units = units;
+				} else {
+					const serials = countSerials(v.serial_numbers);
+					if (!serials.length) return frappe.msgprint(__("Enter at least one serial number."));
+					payload.serial_numbers = serials.join("\n");
+				}
+				d.disable_primary_action();
+				try {
+					const r = await this.api("bulk_create_assets", { data: payload });
+					d.hide();
+					frappe.show_alert({ message: __("{0} assets created{1}", [r.assets.length, r.submitted ? "" : " " + __("as drafts")]), indicator: "green" }, 7);
+					(onDone || (() => {
+						// show the new assets in the register
+						this._assetFilters = { search: item.item_name || itemCode, category: "", sub_category: "", status: "" };
+						if (frappe.get_route()[1] === "assets") this.show();
+						else this.go("assets");
+					}))(r);
+				} finally {
+					d.enable_primary_action();
+				}
+			},
+		});
+		const paintCount = () => {
+			const list = countSerials(d.get_value("serial_numbers"));
+			const dupes = list.filter((s, i) => list.findIndex((x) => x.toLowerCase() === s.toLowerCase()) !== i);
+			d.get_field("serial_count").$wrapper.html(list.length
+				? `<p class="small am-serial-count ${dupes.length ? "text-danger" : "text-muted"}">${dupes.length ? __("Listed twice: {0}", [amEsc([...new Set(dupes)].join(", "))]) : __("{0} asset(s) will be created.", [list.length])}</p>` : "");
+			d.set_primary_action(list.length ? __("Create {0} Assets", [list.length]) : __("Create Assets"));
+		};
+		const resize = (n) => {
+			amResizeUnits(d.fields_dict.units, n);
+			d.set_primary_action(n > 0 ? __("Create {0} Assets", [n]) : __("Create Assets"));
+		};
+		const pasteSerials = () => {
+			const list = countSerials(d.get_value("paste_serials"));
+			if (!list.length) return;
+			if (list.length > (d.get_value("quantity") || 0)) d.set_value("quantity", list.length);
+			amResizeUnits(d.fields_dict.units, Math.max(list.length, d.get_value("quantity") || 0), list);
+			d.set_primary_action(__("Create {0} Assets", [d.fields_dict.units.df.data.length]));
+		};
+		d.show();
+		if (unitsMode) resize(1);
+		else d.fields_dict.serial_numbers.$input.on("input", frappe.utils.debounce(paintCount, 200));
+	}
+
+	/** New or edit a standard Employee (ERPNext's required fields plus the email acknowledgements go to).
+	 * Pass `employee` (values from api.employee) to edit it. */
+	employeeDialog({ employee = null, onDone } = {}) {
+		const editing = !!employee;
+		const d = new frappe.ui.Dialog({
+			title: editing ? __("Edit Employee: {0}", [employee.employee_name]) : __("New Employee"),
+			size: "large",
+			fields: [
+				{ fieldtype: "Data", fieldname: "first_name", label: __("First Name"), reqd: 1 },
+				{ fieldtype: "Data", fieldname: "last_name", label: __("Last Name") },
+				{ fieldtype: "Link", fieldname: "gender", label: __("Gender"), options: "Gender", reqd: 1 },
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Date", fieldname: "date_of_birth", label: __("Date of Birth"), reqd: 1 },
+				{ fieldtype: "Date", fieldname: "date_of_joining", label: __("Date of Joining"), reqd: 1, default: this.boot.today },
+				{ fieldtype: "Data", fieldname: "cell_number", label: __("Mobile"), length: 10, description: __("Digits only, up to 10.") },
+				{ fieldtype: "Section Break", label: __("Work") },
+				{ fieldtype: "Link", fieldname: "company", label: __("Company"), options: "Company", reqd: 1, default: this.boot.company },
+				{ fieldtype: "Link", fieldname: "department", label: __("Department"), options: "Department",
+					get_query: () => ({ filters: { company: d.get_value("company"), is_group: 0 } }) },
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Link", fieldname: "designation", label: __("Designation"), options: "Designation" },
+				...(editing ? [
+					{ fieldtype: "Select", fieldname: "status", label: __("Status"), options: ["Active", "Inactive", "Suspended", "Left"], reqd: 1,
+						description: __("Left / Inactive employees are hidden when assigning assets.") },
+					{ fieldtype: "Date", fieldname: "relieving_date", label: __("Relieving Date"),
+						depends_on: "eval:doc.status=='Left'", mandatory_depends_on: "eval:doc.status=='Left'" },
+				] : []),
+				{ fieldtype: "Section Break", label: __("Email"), description: __("Asset hand-over acknowledgements are sent here (company email first).") },
+				{ fieldtype: "Data", fieldname: "company_email", label: __("Company Email"), options: "Email" },
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Data", fieldname: "personal_email", label: __("Personal Email"), options: "Email" },
+			],
+			primary_action_label: editing ? __("Save") : __("Create Employee"),
+			primary_action: async (v) => {
+				if (v.cell_number && !/^\d{1,10}$/.test(v.cell_number)) return frappe.msgprint(__("Mobile number must be digits only, at most 10."));
+				if (!v.company_email && !v.personal_email) {
+					const go = await new Promise((resolve) => frappe.confirm(
+						__("No email address: this employee won't receive asset acknowledgement emails. Continue?"), () => resolve(true), () => resolve(false)));
+					if (!go) return;
+				}
+				d.disable_primary_action();
+				try {
+					const r = editing
+						? await this.api("update_employee", { name: employee.name, data: v })
+						: await this.api("create_employee", { data: v });
+					d.hide();
+					frappe.show_alert({ message: editing ? __("{0} saved", [r.employee_name]) : __("Employee {0} ({1}) created", [r.employee_name, r.name]), indicator: "green" }, 6);
+					onDone && onDone(r);
+				} finally {
+					d.enable_primary_action();
+				}
+			},
+		});
+		if (editing) {
+			const values = {};
+			["first_name", "last_name", "gender", "date_of_birth", "date_of_joining", "company", "department", "designation", "cell_number",
+				"company_email", "personal_email", "status", "relieving_date"].forEach((f) => (values[f] = employee[f] || ""));
+			d.set_values(values);
+		}
+		d.show();
+		// mobile: digits only, at most 10, as it is typed
+		d.fields_dict.cell_number.$input.attr({ maxlength: 10, inputmode: "numeric" }).on("input", function () {
+			const clean = this.value.replace(/\D/g, "").slice(0, 10);
+			if (clean !== this.value) this.value = clean;
+		});
+	}
+
+	/** Quick dialog for a new Asset Category Type (a standard record). */
+	newTypeDialog(onDone) {
+		const d = new frappe.ui.Dialog({
+			title: __("New Category Type"),
+			fields: [
+				{ fieldtype: "Data", fieldname: "type_name", label: __("Type Name"), reqd: 1, description: __("e.g. Furniture, Vehicle, Software Licence") },
+				{ fieldtype: "Check", fieldname: "is_subscription", label: __("Works like a Subscription"),
+					description: __("Tick for recurring licences: renewal date, billing cycle and monthly cost. Leave unticked for physical items (purchase value, warranty).") },
+				{ fieldtype: "Select", fieldname: "color", label: __("Tag Colour"), default: "green",
+					options: ["blue", "purple", "green", "orange", "red", "yellow", "cyan", "pink", "gray"] },
+				{ fieldtype: "Small Text", fieldname: "description", label: __("Description") },
+			],
+			primary_action_label: __("Create"),
+			primary_action: async (v) => {
+				await frappe.xcall("frappe.client.insert", { doc: { doctype: "Asset Category Type", ...v, is_subscription: v.is_subscription ? 1 : 0 } });
+				d.hide();
+				frappe.show_alert({ message: __("Category Type {0} created", [v.type_name]), indicator: "green" });
+				const b = await this.api("boot");
+				this.boot.category_types = b.category_types;
+				amSetTypeColours(Object.entries(b.category_types || {}).map(([name, t]) => ({ name, color: t.color })));
+				onDone && onDone();
+			},
+		});
+		d.show();
+	}
+
+	/** Edit a sub-category's Specification Fields (Item Group > Asset Specification Fields). */
+	async specFieldsDialog(itemGroup, onDone) {
+		const { fields } = await frappe.xcall("asset_management.asset_management.specifications.get_fields", { item_group: itemGroup });
+		const d = new frappe.ui.Dialog({
+			title: __("Specification Fields: {0}", [itemGroup]),
+			size: "large",
+			fields: [
+				{ fieldtype: "HTML", options: `<p class="text-muted">${__("Every asset in {0} asks for these on its Specifications tab and in Bulk Create. Other sub-categories have their own (a keyboard needs no RAM; a CCTV camera has Resolution and Lens).", [`<b>${amEsc(itemGroup)}</b>`])}</p>
+					<p class="text-muted">${__("Tick <b>Per Unit</b> for values that differ between units (IMEI, MAC address…): when an asset is saved with a quantity above 1, or created in bulk, they are asked for each unit next to its serial number. The others are entered once for all units.")}</p>` },
+				{
+					fieldtype: "Table", fieldname: "fields", label: __("Fields"), in_place_edit: true, cannot_add_rows: false,
+					data: fields.map((f) => ({ ...f, options: String(f.options || "").replace(/\n/g, ", ") })),
+					fields: [
+						{ fieldtype: "Data", fieldname: "field_label", label: __("Field"), in_list_view: 1, reqd: 1, columns: 3 },
+						{ fieldtype: "Select", fieldname: "field_type", label: __("Type"), options: "Text\nNumber\nSelect\nYes/No\nDate", default: "Text", in_list_view: 1, columns: 2 },
+						{ fieldtype: "Data", fieldname: "options", label: __("Choices (for Select, comma separated)"), in_list_view: 1, columns: 3 },
+						{ fieldtype: "Check", fieldname: "mandatory", label: __("Mandatory"), in_list_view: 1, columns: 1 },
+						{ fieldtype: "Check", fieldname: "per_unit", label: __("Per Unit"), in_list_view: 1, columns: 1 },
+					],
+				},
+			],
+			primary_action_label: __("Save"),
+			primary_action: async (v) => {
+				d.disable_primary_action();
+				try {
+					await frappe.xcall("asset_management.asset_management.specifications.save_fields", { item_group: itemGroup, fields: v.fields || [] });
+					d.hide();
+					frappe.show_alert({ message: __("Specification fields of {0} saved", [itemGroup]), indicator: "green" });
+					onDone && onDone();
 				} finally {
 					d.enable_primary_action();
 				}
@@ -240,7 +661,7 @@ class AssetWorkspace {
 			title: assets.length > 1 ? __("Return {0} Assets", [assets.length]) : __("Return Asset"),
 			fields: [
 				{ fieldtype: "HTML", fieldname: "assets_html", options: `<div class="form-group"><label class="control-label">${assets.length === 1 ? __("Asset") : __("{0} assets", [assets.length])}${holder ? " " + __("from {0}", [amEsc(holder)]) : ""}</label><div class="am-tags">${assets.map((a) => amPill(a, "blue")).join("")}</div></div>` },
-				{ fieldtype: "Date", fieldname: "returned_on", label: __("Returned On"), reqd: 1, default: this.boot.today },
+				{ fieldtype: "Datetime", fieldname: "returned_on", label: __("Returned On"), reqd: 1, default: frappe.datetime.now_datetime() },
 				{ fieldtype: "HTML", fieldname: "note", options: `<p class="text-muted small">${__("Creates and submits a standard Asset Movement (Receipt) back to the asset's location.")}</p>` },
 			],
 			primary_action_label: __("Return"),
@@ -324,8 +745,9 @@ class AmView {
 	expiryHtml(r) {
 		if (!r.expiry_date) return `<span class="text-muted">—</span>`;
 		const days = Math.round((new Date(r.expiry_date + "T00:00:00") - new Date(this.boot.today + "T00:00:00")) / 864e5);
-		const cls = days < 0 ? "am-days-late" : days <= 45 ? "am-days-near" : "";
-		const note = days < 0 ? __("{0}d overdue", [-days]) : days <= 45 ? __("in {0}d", [days]) : "";
+		const soon = this.boot.expiry_alert_days ?? 45;  // Settings > Warranty / Renewal Alert
+		const cls = days < 0 ? "am-days-late" : days <= soon ? "am-days-near" : "";
+		const note = days < 0 ? __("{0}d overdue", [-days]) : days <= soon ? __("in {0}d", [days]) : "";
 		return `${amDate(r.expiry_date)}${note ? `<div class="small ${cls}">${note}</div>` : ""}`;
 	}
 	/** Standard page-form filters (the bar under the page title). Returns the controls by fieldname. */
@@ -479,11 +901,11 @@ class AmAssignView extends AmView {
 					...(can ? [[all("assigned"), (r) => ck("assigned", r), { cls: "am-ck" }]] : []),
 					[__("Asset"), (r) => `${amLink(`asset|${r.name}`, r.name)}${amPath(r)}`],
 					[__("Employee"), (r) => `${amLink(`employee|${r.assigned_to}`, r.employee_name || r.assigned_to)}${amMuted(amDept(r.department) || r.assigned_to)}`],
-					[__("Since"), (r) => amDate(r.assigned_on)],
-					...(can ? [["", (r) => this.btn(__("Return"), "return-one", { data: { n: r.name } }), { right: true }]] : []),
+					[__("Since"), (r) => `${amDate(r.assigned_on)}${r.acknowledgement ? `<div>${amAck(r.acknowledgement)}</div>` : ""}`],
+					...(can ? [["", (r) => `${this.btn(__("Transfer"), "transfer-one", { data: { n: r.name } })} ${this.btn(__("Return"), "return-one", { data: { n: r.name } })}`, { right: true }]] : []),
 				], d.assigned, { scroll: true, empty: filtered ? __("No assets are with employees for these filters.") : __("No assets are with employees.") }), {
 					count: d.assigned.length,
-					actions: can ? this.btn(__("Return Selected"), "return-picked", { disabled: true }) : "",
+					actions: can ? `${this.btn(__("Transfer Selected"), "transfer-picked", { disabled: true })} ${this.btn(__("Return Selected"), "return-picked", { disabled: true })}` : "",
 				})}
 			</div>`);
 		this.bindActs();
@@ -503,7 +925,7 @@ class AmAssignView extends AmView {
 		this.paintPicked();
 	}
 	paintPicked() {
-		[["available", "assign-picked", __("Assign Selected")], ["assigned", "return-picked", __("Return Selected")]].forEach(([key, act, label]) => {
+		[["available", "assign-picked", __("Assign Selected")], ["assigned", "return-picked", __("Return Selected")], ["assigned", "transfer-picked", __("Transfer Selected")]].forEach(([key, act, label]) => {
 			const n = this.picked[key].size;
 			this.$(`[data-act=${act}]`).prop("disabled", !n).text(n ? `${label} (${n})` : label);
 			const all = this.$(`[data-all=${key}]`)[0];
@@ -525,10 +947,12 @@ class AmAssignView extends AmView {
 		}
 		if (act === "assign-one") this.app.assignDialog({ assets: [el.dataset.n], onDone: done });
 		else if (act === "assign-picked") this.app.assignDialog({ assets: [...this.picked.available], onDone: done });
-		else if (act === "return-one" || act === "return-picked") {
-			const names = act === "return-one" ? [el.dataset.n] : [...this.picked.assigned];
+		else if (["return-one", "return-picked", "transfer-one", "transfer-picked"].includes(act)) {
+			const names = act.endsWith("-one") ? [el.dataset.n] : [...this.picked.assigned];
 			const holders = new Set(this.data.assigned.filter((r) => names.includes(r.name)).map((r) => r.employee_name || r.assigned_to));
-			this.app.returnDialog({ assets: names, holder: holders.size === 1 ? [...holders][0] : "", onDone: done });
+			const holder = holders.size === 1 ? [...holders][0] : "";
+			if (act.startsWith("transfer")) this.app.transferDialog({ assets: names, holder, onDone: done });
+			else this.app.returnDialog({ assets: names, holder, onDone: done });
 		}
 	}
 }
@@ -540,9 +964,13 @@ class AmEmployeesView extends AmView {
 		super(app);
 		this.filters = Object.assign({ search: "", department: "", holding: "" }, app._empFilters || {});
 	}
+	newEmployee() {
+		this.app.employeeDialog({ onDone: () => this.reload() });
+	}
 	async render(token) {
 		if (!this.controls) {
 			this.page.set_title(__("Employees"));
+			if (this.boot.can_add_employee) this.page.set_primary_action(__("New Employee"), () => this.newEmployee(), "add");
 			this.controls = this.addFilters([
 				{ fieldtype: "Data", fieldname: "search", label: __("Search name, ID or designation"), default: this.filters.search },
 				{ fieldtype: "Select", fieldname: "department", label: __("Department"), options: [{ value: "", label: __("All Departments") }], default: this.filters.department },
@@ -580,7 +1008,7 @@ class AmEmployeesView extends AmView {
 				[__("Subscriptions"), (r) => r.subscriptions || `<span class="text-muted">0</span>`, { right: true }],
 				[__("Assets"), (r) => `<div class="am-tags">${r.assets.slice(0, 3).map((a) => amPill(a, "blue")).join("")}${r.assets.length > 3 ? amPill("+" + (r.assets.length - 3), "gray") : ""}${r.assets.length ? "" : `<span class="text-muted">—</span>`}</div>`],
 				...(can ? [["", (r) => this.btn(__("Assign"), "assign", { data: { e: r.name } }), { right: true }]] : []),
-			], rows, { go: (r) => `employee|${r.name}`, empty: __("No employees match. Employees come from ERPNext's Employee list.") }), { count: rows.length })}`);
+			], rows, { go: (r) => `employee|${r.name}`, empty: all.length ? __("No employees match.") : __("No employees yet. Use New Employee to add one.") }), { count: rows.length })}`);
 		this.bindActs();
 	}
 	onAct(act, el) {
@@ -595,15 +1023,18 @@ class AmEmployeeView extends AmView {
 		const e = d.employee;
 		const cur = d.current;
 		const can = this.boot.can_assign;
-		const hw = cur.filter((a) => a.category_type !== "Subscription").length;
+		const hw = cur.filter((a) => !a.is_subscription).length;
+		this.page.set_title(e.employee_name);  // every render, so an edited name shows at once
+		if (e.status && e.status !== "Active") this.page.set_indicator(__(e.status), "gray");
+		else this.page.clear_indicator();
 		if (!this.headed) {
 			this.headed = true;
-			this.page.set_title(e.employee_name);
 			this.page.add_inner_button(__("Employees"), () => this.app.go("employees"));
+			if (e.can_edit) this.page.add_inner_button(__("Edit"), () => this.app.employeeDialog({ employee: this.data.employee, onDone: () => this.reload() }));
 			this.page.add_inner_button(__("Employee Record"), () => frappe.set_route("Form", "Employee", e.name));
 			if (can) this.page.set_primary_action(__("Assign Asset"), () => this.app.assignDialog({ employee: e.name, onDone: () => this.reload() }));
 		}
-		const info = [e.name, e.designation, amDept(e.department), e.company_email].filter(Boolean).join(" · ");
+		const info = [e.name, e.designation, amDept(e.department), e.prefered_email || e.company_email || e.personal_email].filter(Boolean).join(" · ");
 		this.$body.html(`
 			<div class="frappe-card am-card" style="margin-bottom:var(--margin-md)">${this.who(e.employee_name, info, e.image)}</div>
 			${this.numberCards([
@@ -617,17 +1048,23 @@ class AmEmployeeView extends AmView {
 				[__("Type"), (a) => amPill(a.category_type)],
 				[__("Serial / Licence"), (a) => amEsc(a.serial_no || "—")],
 				[__("Since"), (a) => amDate(a.assigned_on)],
+				[__("Acknowledged"), (a) => amAck(a.acknowledgement) || `<span class="text-muted">—</span>`],
 				[__("Warranty / Renewal"), (a) => this.expiryHtml(a)],
-				...(can ? [["", (a) => this.btn(__("Return"), "return", { data: { n: a.name } }), { right: true }]] : []),
+				...(can ? [["", (a) => `${this.btn(__("Transfer"), "transfer", { data: { n: a.name } })} ${this.btn(__("Return"), "return", { data: { n: a.name } })}`, { right: true }]] : []),
 			], cur, { go: (a) => `asset|${a.name}`, empty: __("{0} holds no assets.", [e.employee_name]) }), {
 				count: cur.length,
 				actions: can && cur.length > 1 ? this.btn(__("Return All ({0})", [cur.length]), "return-all") : "",
 			})}
 			${this.card(__("History"), this.table([
 				[__("Asset"), (h) => `<div class="bold">${amEsc(h.asset)}</div>${amMuted(h.category || "")}`],
-				[__("Assigned"), (h) => amDate(h.assigned_on)],
-				[__("Returned"), (h) => amDate(h.returned_on) || `<span class="text-muted">—</span>`],
-				[__("Asset Movement"), (h) => `<span class="text-muted">${amEsc(h.movement)}</span>`],
+				[__("Received From"), (h) => (h.from_employee ? amEsc(h.from_employee_name || h.from_employee) : amMuted(__("Stock")))],
+				[__("Assigned"), (h) => amDateTime(h.assigned_on)],
+				[__("Returned / Handed To"), (h) => (h.returned_on
+					? `${amDateTime(h.returned_on)}${amMuted(h.handed_to ? __("handed to {0}", [h.handed_to_name || h.handed_to]) : __("returned to stock"))}`
+					: `<span class="text-muted">—</span>`)],
+				[__("Location"), (h) => amEsc(h.location || "—")],
+				[__("Condition"), (h) => amStars(h.condition)],
+				[__("Acknowledged"), (h) => amAck(h.acknowledgement_status) || `<span class="text-muted">—</span>`],
 				[__("Status"), (h) => amPill(h.status)],
 			], d.history, { go: (h) => `asset|${h.asset}`, empty: __("No assignments yet.") }))}`);
 		this.bindActs();
@@ -636,6 +1073,7 @@ class AmEmployeeView extends AmView {
 		const e = this.data.employee;
 		const done = () => this.reload();
 		if (act === "return") this.app.returnDialog({ assets: [el.dataset.n], holder: e.employee_name, onDone: done });
+		else if (act === "transfer") this.app.transferDialog({ assets: [el.dataset.n], holder: e.employee_name, onDone: done });
 		else if (act === "return-all") this.app.returnDialog({ assets: this.data.current.map((a) => a.name), holder: e.employee_name, onDone: done });
 	}
 }
@@ -652,6 +1090,7 @@ class AmAssetsView extends AmView {
 		if (!this.controls) {
 			this.page.set_title(__("Asset Register"));
 			if (this.boot.can_write) this.page.set_primary_action(__("New Asset"), () => frappe.new_doc("Asset"), "add");
+			if (this.boot.can_bulk_create) this.page.add_inner_button(__("Bulk Create"), () => this.app.bulkCreateDialog());
 			this.controls = this.assetFilters(__("Search asset, item, serial no or employee"), [
 				{ fieldtype: "Select", fieldname: "status", label: __("Status"), default: this.filters.status,
 					options: [{ value: "", label: __("All Statuses") }, ...AM_STATUSES.map((s) => ({ value: s, label: __(s) }))] },
@@ -670,7 +1109,7 @@ class AmAssetsView extends AmView {
 				[__("Item"), (r) => `${amEsc(r.item)}${amPath(r)}`],
 				[__("Type"), (r) => amPill(r.category_type)],
 				[__("Status"), (r) => amPill(r.status)],
-				[__("Assigned To"), (r) => (r.assigned_to ? `${amEsc(r.employee_name || r.assigned_to)}${amMuted(__("since {0}", [amDate(r.assigned_on)]))}` : `<span class="text-muted">—</span>`)],
+				[__("Assigned To"), (r) => (r.assigned_to ? `${amEsc(r.employee_name || r.assigned_to)}${amMuted(__("since {0}", [amDate(r.assigned_on)]))}${r.acknowledgement ? amAck(r.acknowledgement) : ""}` : `<span class="text-muted">—</span>`)],
 				[__("Warranty / Renewal"), (r) => this.expiryHtml(r)],
 				[__("Cost"), (r) => (r.purchase_cost ? amInr(r.purchase_cost) + (r.billing_cycle ? amMuted(r.billing_cycle === "Yearly" ? __("per year") : __("per month")) : "") : `<span class="text-muted">—</span>`), { right: true }],
 			], d.rows, { go: (r) => `asset|${r.name}`, empty: __("No assets match.") }), { count: d.rows.length })}`);
@@ -693,7 +1132,7 @@ class AmAssetView extends AmView {
 		if (this.app.stale(token)) return;
 		const a = d.doc;
 		const can = this.boot.can_assign;
-		const sub = a.category_type === "Subscription";
+		const sub = a.is_subscription;
 		const holder = d.holder;
 		const p = this.page;
 		p.set_title(a.name);
@@ -704,7 +1143,23 @@ class AmAssetView extends AmView {
 		p.add_inner_button(a.status === "Draft" ? __("Open to Submit") : __("Asset Form"), () => frappe.set_route("Form", "Asset", a.name));
 		if (can && a.status === "Available") p.set_primary_action(__("Assign"), () => this.app.assignDialog({ assets: [a.name], onDone: () => this.reload() }));
 		if (can && a.status === "Assigned") p.set_primary_action(__("Return"), () => this.app.returnDialog({ assets: [a.name], holder: a.employee_name, onDone: () => this.reload() }));
+		if (can && ["Available", "Assigned"].includes(a.status)) p.add_inner_button(__("Transfer"), () => this.app.transferDialog({ assets: [a.name], holder: a.employee_name, onDone: () => this.reload() }));
 		const kv = (label, value) => `<div class="frappe-control"><label class="control-label">${label}</label><div class="control-value like-disabled-input">${value || "—"}</div></div>`;
+		const ack = d.acknowledgement;
+		const ackHtml = ack
+			? `<div style="margin-top:var(--margin-sm)">${amAck(ack.status)}
+				<span class="text-muted small">${ack.status === "Completed"
+					? __("on {0}{1}", [frappe.datetime.str_to_user(String(ack.acknowledged_on)), ack.acknowledged_ip ? " · " + amEsc(ack.acknowledged_ip) : ""])
+					: ack.email ? __("emailed to {0} · sent {1} time(s)", [amEsc(ack.email), ack.sent_count || 0]) : __("no email address")}</span>
+				${ack.employee_remarks ? `<div class="small" style="margin-top:6px;white-space:pre-wrap"><b>${__("Employee remarks")}:</b> ${amEsc(ack.employee_remarks)}</div>` : ""}
+				${ack.status === "Pending" && this.boot.can_see_acks ? `<div class="am-actions" style="margin-top:6px">${this.btn(__("Resend"), "ack-resend", { data: { n: ack.name } })} ${this.btn(__("Copy Link"), "ack-link", { data: { n: ack.name } })}</div>` : ""}
+			</div>`
+			: "";
+		const specs = d.specifications || [];
+		const specsHtml = specs.length
+			? `<div class="am-spec-grid">${specs.map((s) => `<div><div class="label">${amEsc(s.label)}${s.mandatory ? " *" : ""}</div><div class="value">${s.value ? amEsc(s.value) : `<span class="text-muted">—</span>`}</div></div>`).join("")}</div>`
+			: amEmpty(a.sub_category ? __("No specification fields for {0}. Add them in Catalogue › {0} › Fields.", [a.sub_category]) : __("No specifications."));
+		const who = (id, nameText) => (id ? amEsc(nameText || id) : "");
 		this.$body.html(`
 			<div class="am-grid">
 				${this.card(__("Details"), `<div class="am-kv">
@@ -720,16 +1175,44 @@ class AmAssetView extends AmView {
 				</div>`)}
 				${this.card(__("Assigned To"), holder
 					? `<a href="#" data-go="employee|${amEsc(holder.name)}" style="display:block">${this.who(holder.employee_name, [holder.name, holder.designation, amDept(holder.department)].filter(Boolean).join(" · "), holder.image)}</a>
-						<p class="text-muted small" style="margin-top:var(--margin-sm)">${__("Since {0}", [amDate(a.assigned_on)])}</p>`
+						<p class="text-muted small" style="margin-top:var(--margin-sm)">${__("Since {0}", [amDate(a.assigned_on)])}${a.location ? " · " + amEsc(a.location) : ""}</p>${ackHtml}`
 					: amEmpty(a.status === "Available" ? __("Not assigned. It is ready to hand out.") : __("Not assigned: {0}.", [__(a.status)])))}
 			</div>
-			${this.card(__("Assignment History"), this.table([
+			${this.card(__("Specifications"), specsHtml, { actions: a.sub_category && this.boot.can_edit_fields ? this.btn(__("Edit Fields"), "spec-fields", { data: { s: a.sub_category } }) : "" })}
+			${this.card(__("Custody History"), this.table([
 				[__("Employee"), (h) => `<div class="bold">${amEsc(h.employee_name || h.employee)}</div>${amMuted(amDept(h.department) || h.employee)}`],
-				[__("Assigned"), (h) => amDate(h.assigned_on)],
-				[__("Returned"), (h) => amDate(h.returned_on) || `<span class="text-muted">—</span>`],
-				[__("Asset Movement"), (h) => `<span class="text-muted">${amEsc(h.movement)}</span>`],
+				[__("Received From"), (h) => (h.from_employee ? `<div>${amEsc(h.from_employee_name || h.from_employee)}</div>${amMuted(__("transferred"))}` : amMuted(__("Stock")))],
+				[__("Assigned"), (h) => amDateTime(h.assigned_on)],
+				[__("Returned / Handed To"), (h) => (h.returned_on
+					? `${amDateTime(h.returned_on)}${amMuted(h.handed_to ? __("handed to {0}", [h.handed_to_name || h.handed_to]) : __("returned to stock"))}`
+					: `<span class="text-muted">—</span>`)],
+				[__("Location"), (h) => `${amEsc(h.location || "—")}${(h.transfers || []).map((t) => amMuted(__("moved {0} → {1} on {2}", [t.from || "—", t.to, amDate(t.date)]))).join("")}`],
+				[__("Condition at Hand-over"), (h) => `${amStars(h.condition)}${h.condition_notes ? amMuted(h.condition_notes) : ""}`],
+				[__("Acknowledged"), (h) => (h.acknowledgement_status ? `${amAck(h.acknowledgement_status)}${h.acknowledged_on ? amDateTime(h.acknowledged_on) : ""}${h.employee_remarks ? amMuted(__("Remarks: {0}", [h.employee_remarks])) : ""}` : `<span class="text-muted">—</span>`)],
 				[__("Status"), (h) => amPill(h.status)],
-			], d.history, { go: (h) => `employee|${h.employee}`, empty: __("Never assigned.") }))}`);
+			], d.history, { go: (h) => `employee|${h.employee}`, empty: __("Never assigned.") }))}
+			${this.card(__("Movement Log"), this.table([
+				[__("Date"), (e) => amDateTime(e.date, e.date_only)],
+				[__("Event"), (e) => amPill(__(e.event), AM_INDICATOR[e.event] || (e.event === "Assigned" ? "blue" : e.event === "Returned" ? "gray" : "gray"))],
+				[__("Employee"), (e) => (e.event === "Transferred" ? `${who(e.from_employee, e.from_employee_name)} → <b>${who(e.to_employee, e.to_employee_name)}</b>`
+					: e.event === "Returned" ? who(e.from_employee, e.from_employee_name) : who(e.to_employee, e.to_employee_name)) || `<span class="text-muted">—</span>`],
+				[__("Location"), (e) => (e.from_location ? `${amEsc(e.from_location)} → <b>${amEsc(e.to_location)}</b>` : amEsc(e.to_location || "—"))],
+				[__("Condition"), (e) => amStars(e.condition)],
+				[__("Acknowledgement"), (e) => amAck(e.acknowledgement_status) || ""],
+				[__("Asset Movement"), (e) => `<a href="/app/asset-movement/${encodeURIComponent(e.movement)}" class="text-muted am-no-go">${amEsc(e.movement)}</a>`],
+			], d.timeline || [], { empty: __("No movements yet.") }), { cls: "am-moves" })}`);
+		this.bindActs();
+	}
+	async onAct(act, el) {
+		if (act === "spec-fields") return this.app.specFieldsDialog(el.dataset.s, () => this.reload());
+		if (act === "ack-resend") {
+			const r = await this.api("resend_acknowledgement", { name: el.dataset.n });
+			frappe.show_alert({ message: __("Acknowledgement request resent to {0}", [r.email]), indicator: "green" });
+			return this.reload();
+		}
+		if (act === "ack-link") {
+			frappe.utils.copy_to_clipboard(await this.api("acknowledgement_link", { name: el.dataset.n }));
+		}
 	}
 }
 
@@ -737,22 +1220,36 @@ class AmAssetView extends AmView {
 
 class AmCatalogueView extends AmView {
 	async render(token) {
-		const cats = (this.cats = await this.api("catalogue"));
+		const res = await this.api("catalogue");
 		if (this.app.stale(token)) return;
+		const cats = (this.cats = res.categories);
+		const types = res.types || [];
+		amSetTypeColours(types);
 		const w = this.boot.can_write;
+		const canType = this.boot.can_add_type;
 		if (!this.headed) {
 			this.headed = true;
 			this.page.set_title(__("Asset Catalogue"));
-			if (w) this.page.set_primary_action(__("New Asset Category"), () => frappe.new_doc("Asset Category"), "add");
+			if (w) this.page.set_primary_action(__("New Asset Category"), () => this.newCategory(), "add");
+			if (canType) this.page.add_inner_button(__("New Category Type"), () => this.newType());
 		}
 		const edit = (doctype, name) => this.btn(__("Edit"), "open", { data: { dt: doctype, n: name } });
 		this.$body.html(`
 			<p class="text-muted">${__("Standard ERPNext records: Asset Category › Item Group (sub-category) › Fixed Asset Item › Asset (e.g. IT Hardware › Laptop › Macbook Air M1 › Macbook Air M1 - 001). Buttons open the standard forms.")}</p>
+			${this.card(__("Category Types"), this.table([
+				[__("Type"), (t) => amPill(t.name)],
+				[__("Behaves Like"), (t) => (t.is_subscription ? __("Subscription (renewal date, billing cycle, monthly cost)") : __("Hardware (purchase value, warranty)"))],
+				[__("Asset Categories"), (t) => t.categories, { right: true }],
+				["", (t) => edit("Asset Category Type", t.name), { right: true }],
+			], types, { empty: __("No Category Types yet.") }), {
+				count: __("{0} type(s)", [types.length]),
+				actions: canType ? this.btn(__("+ Category Type"), "add-type") : "",
+			})}
 			${cats.length ? cats.map((c) => this.card(`${amEsc(c.name)} ${amPill(c.category_type || "Hardware")}`,
 				c.subs.length ? c.subs.map((s) => `
 					<div class="am-sub-head">
 						<b>${amEsc(s.name)} <span class="text-muted small">${__("{0} item(s)", [s.items.length])}</span></b>
-						<div class="am-actions">${w ? this.btn(__("+ Item"), "add-item", { data: { s: s.name, c: c.name } }) + " " : ""}${edit("Item Group", s.name)}</div>
+						<div class="am-actions">${this.boot.can_edit_fields ? this.btn(s.spec_fields ? __("Fields ({0})", [s.spec_fields]) : __("+ Fields"), "spec-fields", { data: { s: s.name } }) + " " : ""}${w ? this.btn(__("+ Item"), "add-item", { data: { s: s.name, c: c.name } }) + " " : ""}${edit("Item Group", s.name)}</div>
 					</div>
 					${this.table([
 						[__("Item"), (it) => `<a href="#" data-act="item-assets" data-n="${amEsc(it.name)}" data-c="${amEsc(c.name)}" data-s="${amEsc(s.name)}">${amEsc(it.item_name || it.name)}</a>`],
@@ -760,29 +1257,317 @@ class AmCatalogueView extends AmView {
 						[__("Assets"), (it) => `<b>${it.total}</b>`, { right: true }],
 						[__("Assigned"), (it) => it.assigned, { right: true }],
 						[__("Available"), (it) => it.available, { right: true }],
-						["", (it) => `${w ? this.btn(__("+ Asset"), "add-asset", { data: { n: it.name } }) + " " : ""}${edit("Item", it.name)}`, { right: true }],
+						["", (it) => `${w ? this.btn(__("+ Asset"), "add-asset", { data: { n: it.name } }) + " " : ""}${this.boot.can_bulk_create ? this.btn(__("Bulk"), "bulk-asset", { data: { n: it.name } }) + " " : ""}${edit("Item", it.name)}`, { right: true }],
 					], s.items, { empty: __("No fixed asset items yet.") })}`).join("")
 				: amEmpty(__("No sub-categories yet. A sub-category is an Item Group under “{0}”.", [c.name])),
 				{
 					count: __("{0} sub-categories · {1} assets", [c.subs.length, c.subs.reduce((n, s) => n + s.items.reduce((m, it) => m + it.total, 0), 0)]),
 					actions: `${w ? this.btn(__("+ Sub-Category"), "add-sub", { data: { c: c.name } }) + " " : ""}${edit("Asset Category", c.name)}`,
 				})).join("")
-			: this.card(__("No Asset Categories yet"), amEmpty(__("Add one to start, for example “IT Hardware” or “Subscriptions”.")))}`);
+			: this.card(__("No Asset Categories yet"), amEmpty(__("Add one to start, for example “IT Hardware” or “Subscriptions”.")),
+				{ actions: w ? this.btn(__("+ Asset Category"), "add-category") : "" })}`);
 		this.bindActs();
+	}
+	/** A dialog that creates a standard record through `method`, then refreshes the catalogue and the page filters. */
+	quickCreate(title, fields, method, toArgs, done) {
+		const d = new frappe.ui.Dialog({
+			title,
+			fields,
+			primary_action_label: __("Create"),
+			primary_action: async (v) => {
+				d.disable_primary_action();
+				try {
+					const name = await this.api(method, toArgs(v));
+					d.hide();
+					frappe.show_alert({ message: done(name), indicator: "green" });
+					// new categories / sub-categories also show in the other pages' filters
+					const b = await this.api("boot");
+					Object.assign(this.app.boot, { categories: b.categories, sub_categories: b.sub_categories });
+					this.reload();
+				} finally {
+					d.enable_primary_action();
+				}
+			},
+		});
+		d.show();
+		return d;
+	}
+	async newCategory() {
+		const defaults = await this.api("category_defaults", { category_type: "Hardware" });
+		const d = this.quickCreate(__("New Asset Category"), [
+			{ fieldtype: "Data", fieldname: "category_name", label: __("Category Name"), reqd: 1, description: __("e.g. IT Hardware, Furniture, Software") },
+			{ fieldtype: "Link", fieldname: "category_type", label: __("Category Type"), options: "Asset Category Type", reqd: 1, default: "Hardware",
+				get_query: () => ({ filters: { disabled: 0 } }),
+				onchange: async () => {
+					const t = d.get_value("category_type");
+					if (!t) return;
+					const r = await this.api("category_defaults", { category_type: t });
+					d.set_value("fixed_asset_account", r.fixed_asset_account || "");
+				} },
+			{ fieldtype: "Section Break", label: __("Accounting"), collapsible: 1 },
+			{ fieldtype: "Link", fieldname: "company", label: __("Company"), options: "Company", reqd: 1, default: defaults.company, read_only: 1 },
+			{ fieldtype: "Link", fieldname: "fixed_asset_account", label: __("Fixed Asset Account"), options: "Account", default: defaults.fixed_asset_account,
+				get_query: () => ({ filters: { company: d.get_value("company"), account_type: "Fixed Asset", is_group: 0 } }),
+				description: __("Prefilled from a category of the same type. Depreciation accounts are taken the same way.") },
+		], "create_category", (v) => ({ data: v }), (name) => __("Asset Category {0} created", [name]));
+	}
+	newSubCategory(category) {
+		this.quickCreate(__("New Sub-Category in {0}", [category]), [
+			{ fieldtype: "Data", fieldname: "sub_category", label: __("Sub-Category Name"), reqd: 1, description: __("e.g. Laptop, Monitor, Chair. Saved as an Item Group under “{0}”.", [category]) },
+		], "create_sub_category", (v) => ({ category, sub_category: v.sub_category }), (name) => __("Sub-Category {0} created", [name]));
+	}
+	newItem(category, subCategory) {
+		const d = this.quickCreate(__("New Item in {0} › {1}", [category, subCategory]), [
+			{ fieldtype: "Data", fieldname: "item_name", label: __("Item Name"), reqd: 1, description: __("e.g. Macbook Air M1. Assets of it are named “Macbook Air M1 - 001”, “- 002”, …"),
+				onchange: () => !d.get_value("item_code") && d.set_value("item_code", d.get_value("item_name")) },
+			{ fieldtype: "Data", fieldname: "item_code", label: __("Item Code"), description: __("Defaults to the item name.") },
+			{ fieldtype: "Column Break" },
+			{ fieldtype: "Data", fieldname: "brand", label: __("Brand"), description: __("Created if it doesn't exist.") },
+			{ fieldtype: "Section Break" },
+			{ fieldtype: "Small Text", fieldname: "description", label: __("Description") },
+		], "create_item", (v) => ({ data: { ...v, category, sub_category: subCategory } }), (name) => __("Item {0} created", [name]));
+	}
+	newType() {
+		this.app.newTypeDialog(() => this.reload());
 	}
 	async onAct(act, el) {
 		const n = el.dataset.n;
-		if (act === "open") frappe.set_route("Form", el.dataset.dt, n);
+		if (act === "add-type") this.newType();
+		else if (act === "add-category") this.newCategory();
+		else if (act === "open") frappe.set_route("Form", el.dataset.dt, n);
 		else if (act === "add-sub") {
-			await this.api("ensure_category_group", { category: el.dataset.c }); // the Item Group the sub-category sits under
-			frappe.new_doc("Item Group", { parent_item_group: el.dataset.c, is_group: 0 });
+			this.newSubCategory(el.dataset.c);
 		} else if (act === "add-item") {
-			frappe.new_doc("Item", { item_group: el.dataset.s, asset_category: el.dataset.c, is_fixed_asset: 1, is_stock_item: 0 });
+			this.newItem(el.dataset.c, el.dataset.s);
 		} else if (act === "add-asset") {
 			frappe.new_doc("Asset", { item_code: n });
+		} else if (act === "bulk-asset") {
+			this.app.bulkCreateDialog(n);
+		} else if (act === "spec-fields") {
+			this.app.specFieldsDialog(el.dataset.s, () => this.reload());
 		} else if (act === "item-assets") {
 			this.app._assetFilters = { search: n, category: el.dataset.c, sub_category: el.dataset.s, status: "" };
 			this.app.go("assets");
+		}
+	}
+}
+
+// ------------------------------------------------------------------ hand-over acknowledgements
+
+class AmAcksView extends AmView {
+	constructor(app) {
+		super(app);
+		this.filters = Object.assign({ search: "", status: "Pending" }, app._ackFilters || {});
+	}
+	async render(token) {
+		if (!this.controls) {
+			this.page.set_title(__("Acknowledgements"));
+			this.page.add_inner_button(__("Settings"), () => this.app.go("settings"));
+			this.controls = this.addFilters([
+				{ fieldtype: "Data", fieldname: "search", label: __("Search employee, asset, serial no or record"), default: this.filters.search },
+				{ fieldtype: "Select", fieldname: "status", label: __("Status"), default: this.filters.status,
+					options: [{ value: "", label: __("All Statuses") }, ...["Pending", "Completed", "Cancelled"].map((s) => ({ value: s, label: __(s) }))] },
+			], (key, value) => {
+				this.filters[key] = value || "";
+				this.reload();
+			});
+		}
+		const d = (this.data = await this.api("acknowledgements", this.filters));
+		if (this.app.stale(token)) return;
+		this.app._ackFilters = this.filters;
+		const c = d.counts;
+		const total = Object.values(c).reduce((a, b) => a + b, 0);
+		const pending = (r) => r.status === "Pending";
+		this.$body.html(`
+			${this.boot.ack_enabled ? "" : `<div class="alert alert-warning">${__("Acknowledgement emails are turned off, so new hand-overs don't ask for one.")} <a href="#" data-go="settings">${__("Turn on in Settings")} →</a></div>`}
+			${this.numberCards([
+				{ label: __("Pending"), value: c.Pending || 0, color: "orange", act: "status", s: "Pending" },
+				{ label: __("Completed"), value: c.Completed || 0, color: "green", act: "status", s: "Completed" },
+				{ label: __("Cancelled"), value: c.Cancelled || 0, act: "status", s: "Cancelled" },
+				{ label: __("All"), value: total, act: "status", s: "" },
+			])}
+			${this.card(__("Hand-over Acknowledgements"), this.table([
+				[__("Employee"), (r) => `${amLink(`employee|${r.employee}`, r.employee_name || r.employee)}${amMuted(r.email || __("no email address"))}`],
+				[__("Assets"), (r) => `<div class="am-tags">${r.assets.map((a) => `<span title="${amEsc(a.serial_no || "")}">${amPill(a.asset, "blue")}</span>`).join("")}</div>`],
+				[__("Handed Over"), (r) => `${amDate(r.assigned_on)}${amMuted(r.movement_purpose || "")}`],
+				[__("Sent"), (r) => (r.sent_count ? `${__("{0}×", [r.sent_count])}${amMuted(__("last {0}", [frappe.datetime.str_to_user(String(r.last_sent_on || r.sent_on || ""))]))}` : `<span class="text-muted">${__("not sent")}</span>`)],
+				[__("Status"), (r) => `${amPill(__(r.status), AM_INDICATOR[r.status])}${r.acknowledged_on ? amMuted(`${frappe.datetime.str_to_user(String(r.acknowledged_on))}${r.acknowledged_ip ? " · " + r.acknowledged_ip : ""}`) : ""}`],
+				[__("Employee Remarks"), (r) => (r.employee_remarks ? `<div class="small" style="max-width:280px;white-space:pre-wrap">${amEsc(r.employee_remarks)}</div>` : `<span class="text-muted">—</span>`)],
+				["", (r) => (pending(r) && d.can_resend ? `${this.btn(__("Resend"), "resend", { data: { n: r.name } })} ${this.btn(__("Copy Link"), "link", { data: { n: r.name } })}` : `<a href="/app/asset-acknowledgement/${encodeURIComponent(r.name)}" class="text-muted small am-no-go">${amEsc(r.name)}</a>`), { right: true }],
+			], d.rows, { empty: this.filters.status === "Pending" ? __("Nothing waiting: every hand-over is acknowledged.") : __("No acknowledgements match.") }), { count: d.rows.length })}
+			<p class="text-muted small">${__("Assigning or transferring an asset to an employee emails them a link (CC the IT team). They confirm on a simple page without logging in; the time, network address and browser are kept as proof.")}</p>`);
+		this.$(".number-widget-box[data-act=status]").each((_, el) => el.classList.toggle("am-on", el.dataset.s === this.filters.status));
+		this.bindActs();
+	}
+	async onAct(act, el) {
+		if (act === "status") {
+			this.filters.status = el.dataset.s;
+			this.controls.status.set_input(this.filters.status);
+			return this.reload();
+		}
+		if (act === "resend") {
+			el.disabled = true;
+			try {
+				const r = await this.api("resend_acknowledgement", { name: el.dataset.n });
+				frappe.show_alert({ message: __("Resent to {0}", [r.email]), indicator: "green" });
+				this.reload();
+			} finally {
+				el.disabled = false;
+			}
+		} else if (act === "link") {
+			frappe.utils.copy_to_clipboard(await this.api("acknowledgement_link", { name: el.dataset.n }));
+		}
+	}
+}
+
+// ------------------------------------------------------------------ settings (Asset Management Settings, naming, specifications, masters)
+
+class AmSettingsView extends AmView {
+	async render(token) {
+		const d = (this.data = await this.api("settings_page"));
+		if (this.app.stale(token)) return;
+		const s = d.settings;
+		const can = d.can_write;
+		if (!this.headed) {
+			this.headed = true;
+			this.page.set_title(__("Settings"));
+			if (can) this.page.set_primary_action(__("Save Settings"), () => this.save(), "check");
+			this.page.add_inner_button(__("Settings Form"), () => frappe.set_route("Form", "Asset Management Settings"));
+		}
+		const code = (t) => `<code>${amEsc(t)}</code>`;
+		const seriesHtml = d.series.map((sr, i) => {
+			const first = sr.counters[0];
+			const example = first ? first.next : sr.per_model ? __("e.g. Macbook Air M1 - 001 (no models yet)") : "";
+			return `<div class="am-sub-head">
+					<div><b>${code(sr.series)}</b> ${sr.default ? amPill(__("Default"), "green") : ""}
+						<div class="text-muted small">${sr.per_model ? __("A counter per model. Next: {0}", [amEsc(example)]) : __("Next: {0}", [amEsc(example)])}</div></div>
+					<div class="am-actions">${can && !sr.default ? `${this.btn(__("Make Default"), "series-default", { data: { i } })} ${this.btn(__("Remove"), "series-remove", { data: { i } })}` : ""}</div>
+				</div>
+				${sr.counters.length ? this.table([
+					[sr.per_model ? __("Model") : __("Prefix"), (c) => amEsc(c.label)],
+					[__("Current Number"), (c) => `<b>${c.current}</b>`, { right: true }],
+					[__("Next Name"), (c) => code(c.next)],
+					[__("Assets"), (c) => c.assets, { right: true }],
+					...(can ? [["", (c) => this.btn(__("Set"), "series-set", { data: { p: c.prefix, c: c.current } }), { right: true }]] : []),
+				], sr.counters) : ""}`;
+		}).join("");
+		this.$body.html(`
+			${this.card(__("General"), `<div class="am-settings-form"></div>
+				<p class="text-muted small" style="margin-top:var(--margin-sm)">${d.email_account
+					? __("Emails go out from {0} (the default outgoing Email Account).", [`<b>${amEsc(d.email_account)}</b>`])
+					: `<span style="color:var(--red-600)">${__("No outgoing Email Account is set up, so acknowledgement emails can't be sent.")}</span>`}</p>`)}
+			${this.card(__("Asset Naming"), `
+				<p class="text-muted">${__("How new assets are named. {0} gives a counter per model (Macbook Air M1 - 001); {1} gives one running number (ACC-ASS-2026-00001). The default is used for new assets, including Bulk Create.", [code(".{item_name}. - .###"), code("ACC-ASS-.YYYY.-")])}</p>
+				${seriesHtml}
+				${can ? `<div class="am-sub-head"><div class="am-series-add" style="flex:1;max-width:420px"></div><div class="am-actions">${this.btn(__("Add Series"), "series-add")}</div></div>` : ""}`)}
+			${this.card(__("Specification Fields"), this.table([
+				[__("Sub-Category"), (x) => `<b>${amEsc(x.name)}</b>${amMuted(x.category)}`],
+				[__("Fields"), (x) => (x.fields.length ? `<div class="am-tags">${x.fields.map((f) => amPill(`${f.field_label}${f.mandatory ? " *" : ""} · ${__(f.field_type)}${f.per_unit ? " · " + __("per unit") : ""}`, f.per_unit ? "purple" : "blue")).join("")}</div>` : `<span class="text-muted">${__("None")}</span>`)],
+				[__("Assets"), (x) => x.assets, { right: true }],
+				...(this.boot.can_edit_fields ? [["", (x) => this.btn(x.fields.length ? __("Edit") : __("+ Fields"), "spec", { data: { s: x.name } }), { right: true }]] : []),
+			], d.sub_categories, { empty: __("No sub-categories yet. Add them in Catalogue.") }), { count: d.sub_categories.length })}
+			<div class="am-grid">
+				${this.card(__("Category Types"), this.table([
+					[__("Type"), (t) => amPill(t.name, t.color)],
+					[__("Behaves Like"), (t) => (t.is_subscription ? __("Subscription") : __("Hardware"))],
+					[__("Categories"), (t) => t.categories, { right: true }],
+					["", (t) => this.btn(__("Edit"), "open", { data: { dt: "Asset Category Type", n: t.name } }), { right: true }],
+				], d.types, { empty: __("No Category Types. Add one before creating a category.") }), {
+					count: d.types.length, actions: this.boot.can_add_type ? this.btn(__("+ Category Type"), "add-type") : "" })}
+				${this.card(__("Locations"), this.table([
+					[__("Location"), (l) => `<b>${amEsc(l.name)}</b>${l.name === s.default_location ? " " + amPill(__("Default"), "green") : ""}`],
+					[__("Assets"), (l) => l.assets, { right: true }],
+					["", (l) => this.btn(__("Edit"), "open", { data: { dt: "Location", n: l.name } }), { right: true }],
+				], d.locations, { empty: __("No locations yet.") }), { count: d.locations.length, actions: this.btn(__("+ Location"), "add-location") })}
+			</div>`);
+		this.form = new frappe.ui.FieldGroup({
+			body: this.$(".am-settings-form")[0],
+			fields: [
+				{ fieldtype: "Section Break", label: __("Hand-over Acknowledgement") },
+				{ fieldtype: "Check", fieldname: "send_acknowledgement", label: __("Ask employees to acknowledge assets"),
+					description: __("Email the employee a link when an asset is assigned or transferred to them.") },
+				{ fieldtype: "Small Text", fieldname: "it_team_emails", label: __("IT Team Emails (CC)"), description: __("Comma separated. Copied on every request and told when it is acknowledged.") },
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Small Text", fieldname: "acknowledgement_message", label: __("Message to the Employee") },
+				{ fieldtype: "Section Break", label: __("Hand-over & Defaults") },
+				{ fieldtype: "Check", fieldname: "require_condition_rating", label: __("Condition rating (stars) required at hand-over") },
+				{ fieldtype: "Link", fieldname: "default_location", label: __("Default Location for New Assets"), options: "Location" },
+				{ fieldtype: "Column Break" },
+				{ fieldtype: "Int", fieldname: "expiry_alert_days", label: __("Warranty / Renewal Alert (days)"), description: __("Ending within this many days is flagged.") },
+			],
+		});
+		this.form.make();
+		this.form.set_values({ ...s, send_acknowledgement: s.send_acknowledgement ? 1 : 0, require_condition_rating: s.require_condition_rating ? 1 : 0 });
+		if (!can) this.form.fields.forEach((f) => f.df && (f.df.read_only = 1) && f.refresh && f.refresh());
+		if (can) {
+			this.newSeries = frappe.ui.form.make_control({
+				parent: this.$(".am-series-add")[0],
+				df: { fieldtype: "Data", fieldname: "new_series", placeholder: __("New series, e.g. IT-.YYYY.-.#### or .{item_name}. - .###") },
+				render_input: true,
+			});
+		}
+		this.bindActs();
+	}
+	/** Refresh what the other tabs read from boot. */
+	async rebootSettings() {
+		const b = await this.api("boot");
+		Object.assign(this.boot, {
+			ack_enabled: b.ack_enabled, require_rating: b.require_rating, expiry_alert_days: b.expiry_alert_days, default_location: b.default_location,
+		});
+	}
+	async save() {
+		const v = this.form.get_values(true) || {};
+		await this.api("save_settings", { data: {
+			send_acknowledgement: v.send_acknowledgement ? 1 : 0, it_team_emails: v.it_team_emails || "", acknowledgement_message: v.acknowledgement_message || "",
+			require_condition_rating: v.require_condition_rating ? 1 : 0, default_location: v.default_location || "", expiry_alert_days: v.expiry_alert_days || 0,
+		} });
+		await this.rebootSettings();
+		frappe.show_alert({ message: __("Settings saved"), indicator: "green" });
+		this.reload();
+	}
+	/** Change the list of series / the default, saved at once. */
+	async saveSeries(list, def) {
+		await this.api("save_settings", { data: { naming_series_options: list.join("\n"), default_naming_series: def } });
+		frappe.show_alert({ message: __("Asset naming updated"), indicator: "green" });
+		this.reload();
+	}
+	async onAct(act, el) {
+		const series = this.data.series.map((x) => x.series);
+		const def = (this.data.series.find((x) => x.default) || {}).series || series[0];
+		if (act === "series-default") return this.saveSeries(series, series[+el.dataset.i]);
+		if (act === "series-remove") {
+			const gone = series[+el.dataset.i];
+			return frappe.confirm(__("Stop offering {0} for new assets? Existing assets keep their names.", [`<code>${amEsc(gone)}</code>`]),
+				() => this.saveSeries(series.filter((x) => x !== gone), def));
+		}
+		if (act === "series-add") {
+			const value = (this.newSeries.get_value() || "").trim();
+			if (!value) return frappe.msgprint(__("Type the new series first."));
+			if (series.includes(value)) return frappe.msgprint(__("{0} is already in the list.", [value]));
+			return this.saveSeries([...series, value], def);
+		}
+		if (act === "series-set") {
+			const prefix = el.dataset.p;
+			return frappe.prompt(
+				[{ fieldtype: "Int", fieldname: "current", label: __("Current Number"), default: +el.dataset.c, reqd: 1,
+					description: __("The last number used. The next asset gets this + 1. It can't go below the highest existing asset of {0}.", [prefix]) }],
+				async (v) => {
+					this.data = await this.api("set_series_counter", { prefix, current: v.current });
+					frappe.show_alert({ message: __("{0} continues after {1}", [prefix, v.current]), indicator: "green" });
+					this.reload();
+				},
+				__("Set Counter: {0}", [prefix]), __("Set"),
+			);
+		}
+		if (act === "spec") return this.app.specFieldsDialog(el.dataset.s, () => this.reload());
+		if (act === "add-type") return this.app.newTypeDialog(() => this.reload());
+		if (act === "open") return frappe.set_route("Form", el.dataset.dt, el.dataset.n);
+		if (act === "add-location") {
+			return frappe.prompt([{ fieldtype: "Data", fieldname: "location_name", label: __("Location Name"), reqd: 1 }], async (v) => {
+				await this.api("create_location", { location_name: v.location_name });
+				frappe.show_alert({ message: __("Location {0} created", [v.location_name]), indicator: "green" });
+				this.reload();
+			}, __("New Location"), __("Create"));
 		}
 	}
 }
