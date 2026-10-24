@@ -1,0 +1,123 @@
+{
+ "actions": [],
+ "creation": "2026-10-23 12:00:00.000000",
+ "description": "Asset Workspace settings: hand-over acknowledgements, defaults and asset naming. Managed from Asset Workspace > Settings.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "acknowledgement_section",
+  "send_acknowledgement",
+  "it_team_emails",
+  "column_break_1",
+  "acknowledgement_message",
+  "handover_section",
+  "require_condition_rating",
+  "column_break_2",
+  "expiry_alert_days",
+  "default_location",
+  "naming_section",
+  "naming_series_options",
+  "column_break_3",
+  "default_naming_series"
+ ],
+ "fields": [
+  {
+   "fieldname": "acknowledgement_section",
+   "fieldtype": "Section Break",
+   "label": "Hand-over Acknowledgement"
+  },
+  {
+   "default": "1",
+   "description": "When an asset is assigned or transferred to an employee, email them an acknowledgement link. Untick to stop the emails (no acknowledgement is requested).",
+   "fieldname": "send_acknowledgement",
+   "fieldtype": "Check",
+   "label": "Ask Employees to Acknowledge Assets"
+  },
+  {
+   "description": "Copied (CC) on every acknowledgement email. Separate several addresses with commas.",
+   "fieldname": "it_team_emails",
+   "fieldtype": "Small Text",
+   "label": "IT Team Emails (CC)"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Please check the asset(s) below and confirm that you have received them in the condition shown.",
+   "description": "Shown to the employee in the email and on the acknowledgement page.",
+   "fieldname": "acknowledgement_message",
+   "fieldtype": "Small Text",
+   "label": "Message to the Employee"
+  },
+  {
+   "fieldname": "handover_section",
+   "fieldtype": "Section Break",
+   "label": "Hand-over & Defaults"
+  },
+  {
+   "default": "1",
+   "description": "IT must give each asset a 1 to 5 star condition when assigning or transferring it to an employee.",
+   "fieldname": "require_condition_rating",
+   "fieldtype": "Check",
+   "label": "Condition Rating Required at Hand-over"
+  },
+  {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "45",
+   "description": "Warranties and subscription renewals ending within this many days are flagged on the dashboard and lists.",
+   "fieldname": "expiry_alert_days",
+   "fieldtype": "Int",
+   "label": "Warranty / Renewal Alert (days)",
+   "non_negative": 1
+  },
+  {
+   "description": "Prefilled on Bulk Create.",
+   "fieldname": "default_location",
+   "fieldtype": "Link",
+   "label": "Default Location for New Assets",
+   "options": "Location"
+  },
+  {
+   "fieldname": "naming_section",
+   "fieldtype": "Section Break",
+   "label": "Asset Naming"
+  },
+  {
+   "description": "The Asset naming series to offer, one per line. .{item_name}. - .### gives \"Macbook Air M1 - 001\" (a counter per model); ACC-ASS-.YYYY.- gives ACC-ASS-2026-00001.",
+   "fieldname": "naming_series_options",
+   "fieldtype": "Small Text",
+   "label": "Naming Series"
+  },
+  {
+   "fieldname": "column_break_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Used for new assets (one of the series on the left).",
+   "fieldname": "default_naming_series",
+   "fieldtype": "Data",
+   "label": "Default Series"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-23 16:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Asset Management",
+ "name": "Asset Management Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "email": 1, "print": 1, "read": 1, "role": "System Manager", "share": 1, "write": 1},
+  {"create": 1, "read": 1, "role": "Accounts Manager", "write": 1},
+  {"create": 1, "read": 1, "role": "Stock Manager", "write": 1}
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

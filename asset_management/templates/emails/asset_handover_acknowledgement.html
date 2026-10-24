@@ -1,0 +1,45 @@
+<div style="font-family: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1f2937; max-width: 640px; margin: 0 auto;">
+	<div style="background: #312e81; color: #ffffff; padding: 22px 26px; border-radius: 10px 10px 0 0;">
+		<div style="font-size: 12px; letter-spacing: .08em; text-transform: uppercase; opacity: .8;">{{ company or "" }} · IT Assets</div>
+		<div style="font-size: 20px; font-weight: 600; margin-top: 4px;">
+			{% if resend %}Reminder: please{% else %}Please{% endif %} acknowledge your asset{{ "s" if items|length > 1 else "" }}
+		</div>
+	</div>
+	<div style="border: 1px solid #e5e7eb; border-top: 0; border-radius: 0 0 10px 10px; padding: 24px 26px;">
+		<p style="margin: 0 0 12px;">Hi {{ ack.employee_name or ack.employee }},</p>
+		<p style="margin: 0 0 18px; color: #4b5563;">{{ message or "Please check the asset(s) below and confirm that you have received them in the condition shown." }}</p>
+
+		<table cellpadding="0" cellspacing="0" style="width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 22px;">
+			<thead>
+				<tr style="background: #eef0ff; color: #312e81; text-align: left;">
+					<th style="padding: 9px 10px;">Asset</th>
+					<th style="padding: 9px 10px;">Serial No</th>
+					<th style="padding: 9px 10px;">Location</th>
+					<th style="padding: 9px 10px;">Condition</th>
+				</tr>
+			</thead>
+			<tbody>
+				{% for i in items %}
+				<tr style="border-bottom: 1px solid #e5e7eb;">
+					<td style="padding: 10px; vertical-align: top;">
+						<b>{{ i.asset_name or i.asset }}</b>
+						<div style="color: #6b7280; font-size: 12px;">{{ i.item_code or "" }}{% if i.sub_category %} · {{ i.sub_category }}{% endif %}</div>
+					</td>
+					<td style="padding: 10px; vertical-align: top;">{{ i.serial_no or "—" }}</td>
+					<td style="padding: 10px; vertical-align: top;">{{ i.location or "—" }}</td>
+					<td style="padding: 10px; vertical-align: top; white-space: nowrap;">
+						<span style="color: #f59e0b; font-size: 16px; letter-spacing: 1px;">{{ i.stars or "—" }}</span>
+						{% if i.condition_notes %}<div style="color: #6b7280; font-size: 12px; white-space: normal;">{{ i.condition_notes }}</div>{% endif %}
+					</td>
+				</tr>
+				{% endfor %}
+			</tbody>
+		</table>
+
+		<div style="text-align: center; margin: 8px 0 22px;">
+			<a href="{{ link }}" style="display: inline-block; background: #4338ca; color: #ffffff; text-decoration: none; font-weight: 600; padding: 12px 28px; border-radius: 8px;">Review &amp; Acknowledge</a>
+		</div>
+		<p style="font-size: 12px; color: #6b7280; margin: 0 0 6px;">If the button doesn't work, open this link:<br><a href="{{ link }}" style="color: #4338ca; word-break: break-all;">{{ link }}</a></p>
+		<p style="font-size: 12px; color: #6b7280; margin: 14px 0 0;">Handed over on {{ frappe.utils.format_datetime(ack.assigned_on, "dd-MM-yyyy HH:mm") if ack.assigned_on else "" }} · Reference {{ ack.name }}. If something is wrong (missing item, different condition), reply to this email before acknowledging.</p>
+	</div>
+</div>

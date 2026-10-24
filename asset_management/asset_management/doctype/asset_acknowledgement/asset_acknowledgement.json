@@ -1,0 +1,208 @@
+{
+ "actions": [],
+ "autoname": "ACK-.YYYY.-.#####",
+ "creation": "2026-10-23 12:00:00.000000",
+ "description": "An employee's confirmation that they received assets (one per hand-over). Created automatically when an Asset Movement assigns or transfers assets to an employee; the employee acknowledges from the emailed link, no login needed.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "status",
+  "employee",
+  "employee_name",
+  "email",
+  "cc",
+  "column_break_1",
+  "asset_movement",
+  "movement_purpose",
+  "assigned_on",
+  "company",
+  "items_section",
+  "items",
+  "tracking_section",
+  "sent_on",
+  "last_sent_on",
+  "sent_count",
+  "column_break_2",
+  "acknowledged_on",
+  "employee_remarks",
+  "acknowledged_ip",
+  "acknowledged_user_agent",
+  "key"
+ ],
+ "fields": [
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Pending\nCompleted\nCancelled",
+   "read_only": 1
+  },
+  {
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Employee",
+   "options": "Employee",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fetch_from": "employee.employee_name",
+   "fieldname": "employee_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Employee Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "email",
+   "fieldtype": "Data",
+   "label": "Sent To",
+   "options": "Email",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cc",
+   "fieldtype": "Small Text",
+   "label": "CC",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "asset_movement",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Asset Movement",
+   "options": "Asset Movement",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "movement_purpose",
+   "fieldtype": "Data",
+   "label": "Movement",
+   "read_only": 1
+  },
+  {
+   "fieldname": "assigned_on",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Handed Over On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1
+  },
+  {
+   "fieldname": "items_section",
+   "fieldtype": "Section Break",
+   "label": "Assets"
+  },
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "Assets",
+   "options": "Asset Acknowledgement Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tracking_section",
+   "fieldtype": "Section Break",
+   "label": "Tracking"
+  },
+  {
+   "fieldname": "sent_on",
+   "fieldtype": "Datetime",
+   "label": "First Sent On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_sent_on",
+   "fieldtype": "Datetime",
+   "label": "Last Sent On",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "sent_count",
+   "fieldtype": "Int",
+   "label": "Times Sent",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "acknowledged_on",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Acknowledged On",
+   "read_only": 1
+  },
+  {
+   "description": "What the employee wrote when acknowledging (e.g. a missing accessory or a different condition).",
+   "fieldname": "employee_remarks",
+   "fieldtype": "Small Text",
+   "label": "Employee Remarks",
+   "read_only": 1
+  },
+  {
+   "description": "Network address the acknowledgement came from.",
+   "fieldname": "acknowledged_ip",
+   "fieldtype": "Data",
+   "label": "Acknowledged From (IP)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "acknowledged_user_agent",
+   "fieldtype": "Small Text",
+   "label": "Browser",
+   "read_only": 1
+  },
+  {
+   "fieldname": "key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Link Key",
+   "no_copy": 1,
+   "read_only": 1,
+   "unique": 1
+  }
+ ],
+ "in_create": 1,
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-10-23 14:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Asset Management",
+ "name": "Asset Acknowledgement",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {"email": 1, "export": 1, "print": 1, "read": 1, "report": 1, "role": "System Manager", "share": 1, "write": 1},
+  {"export": 1, "print": 1, "read": 1, "report": 1, "role": "Accounts Manager", "write": 1},
+  {"export": 1, "print": 1, "read": 1, "report": 1, "role": "Stock Manager", "write": 1}
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [
+  {"color": "Orange", "title": "Pending"},
+  {"color": "Green", "title": "Completed"},
+  {"color": "Gray", "title": "Cancelled"}
+ ],
+ "title_field": "employee_name",
+ "track_changes": 1
+}

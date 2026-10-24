@@ -10,10 +10,23 @@ required_apps = ["erpnext"]
 after_install = "asset_management.asset_management.setup.setup_asset_management"
 after_migrate = "asset_management.asset_management.setup.setup_asset_management"
 
+doctype_js = {
+	# Specifications tab: rows follow the item's sub-category
+	"Asset": "public/js/asset.js",
+}
+
 doc_events = {
-	# "Macbook Air M1 - 001" naming on the standard Asset
 	"Asset": {
+		# "Macbook Air M1 - 001" naming on the standard Asset
 		"before_insert": "asset_management.asset_management.asset.before_insert",
 		"after_insert": "asset_management.asset_management.asset.after_insert",
+		# specifications per sub-category (Item Group > Specification Fields)
+		"validate": "asset_management.asset_management.specifications.validate_asset",
+		"before_update_after_submit": "asset_management.asset_management.specifications.validate_asset",
+	},
+	# hand-over acknowledgement email when an asset is assigned / transferred to an employee
+	"Asset Movement": {
+		"on_submit": "asset_management.asset_management.acknowledgement.on_movement_submit",
+		"on_cancel": "asset_management.asset_management.acknowledgement.on_movement_cancel",
 	},
 }

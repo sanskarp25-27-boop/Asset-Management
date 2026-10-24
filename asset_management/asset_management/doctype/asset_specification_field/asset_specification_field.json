@@ -1,0 +1,73 @@
+{
+ "actions": [],
+ "creation": "2026-10-23 12:00:00.000000",
+ "description": "One specification asked for on every asset of a sub-category (Item Group), e.g. RAM, SSD, Lens type.",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "field_label",
+  "field_type",
+  "options",
+  "mandatory",
+  "per_unit"
+ ],
+ "fields": [
+  {
+   "columns": 3,
+   "fieldname": "field_label",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Field",
+   "reqd": 1
+  },
+  {
+   "columns": 2,
+   "default": "Text",
+   "fieldname": "field_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Type",
+   "options": "Text\nNumber\nSelect\nYes/No\nDate",
+   "reqd": 1
+  },
+  {
+   "columns": 3,
+   "description": "For Select: the choices, one per line or comma separated.",
+   "fieldname": "options",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Options"
+  },
+  {
+   "columns": 1,
+   "default": "0",
+   "description": "Must be filled before the asset is submitted.",
+   "fieldname": "mandatory",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Mandatory"
+  },
+  {
+   "columns": 1,
+   "default": "0",
+   "description": "Differs from unit to unit (e.g. IMEI, MAC address): asked for each unit when an asset is saved with a quantity above 1 or created in bulk. Fields not ticked are the same for all units.",
+   "fieldname": "per_unit",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Per Unit"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-10-23 18:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Asset Management",
+ "name": "Asset Specification Field",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}
